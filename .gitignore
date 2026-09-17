@@ -3,3 +3,4 @@ deploy/.env
 *.db
 gate/gate
 spike/minter/minter
+/.idea/
