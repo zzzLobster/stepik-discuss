@@ -28,15 +28,21 @@ one probe comment per valid identity.
 
 | # | Call | Want |
 |---|------|------|
-| 1 | valid teacher `GET /user` | 200 |
-| 2 | valid student `GET /user` | 200 |
-| 3 | tampered `GET /user` | 401 |
-| 4 | expired `GET /user` | 401 |
-| 5 | no-cookie `GET /user` | 401 |
-| 6 | teacher + student `POST /comment` | 201/200, each attributed to own `stepik_<id>` |
+| 1 | valid teacher `GET /user?site=` | 200, `stepik_1182644732`, `admin:true` |
+| 2 | valid student `GET /user?site=` | 200, `stepik_<id>`, `admin:false` |
+| 3 | tampered `GET /user?site=` | 401 |
+| 4 | expired `GET /user?site=` | 401 |
+| 5 | no-cookie `GET /user?site=` | 401 |
+| 6 | teacher + student `POST /comment?site=` | 201, each attributed to own `stepik_<id>` |
+| 7 | teacher `GET /admin/blocked?site=` | 200 (functional admin probe) |
+| 8 | student `GET /admin/blocked?site=` | 403 |
+
+`?site=` is mandatory on protected calls (remark42 `matchSiteID` → 403
+without it; bundled frontend always sends it).
 
 Admin mapping check: teacher `GET /user` must report `admin=true`
-(`ADMIN_SHARED_ID=stepik_1182644732`).
+(`ADMIN_SHARED_ID=stepik_1182644732` + `user.attrs.admin=true` in
+Gate-minted claims, D0 finding); functional proof is row 7 vs 8.
 
 The minter exits 0 only if every row passes, then prints
 `SPIKE VERDICT: JWT shape (b) works with stock remark42.`

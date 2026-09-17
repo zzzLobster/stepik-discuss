@@ -294,6 +294,11 @@ Boot with `STEPIK_CLIENT_ID=placeholder` → `/auth/login` `503` `"Вход
 - Admin: `ADMIN_SHARED_ID=stepik_1182644732`, `AUTH_TTL_JWT=5m`.
   No co-teachers. No scope-explainer note on login page (decided: consent +
   button only).
+- Custom provider placeholder `stepik` (D0-mandatory, see §6.1 verdict):
+  `AUTH_CUSTOM_NAME=stepik`, dummy `CID/CSEC`
+  (`spike-placeholder-never-completes`, non-secrets), real Stepik
+  auth/token/info URLs. Login via remark42 can never complete (dummy
+  client); the provider exists only to satisfy the allowlist.
 - `AVATAR_PROXY=true`; avatars hotlinked from Stepik CDN via Gate-cached URL.
 - `MAX_COMMENT_SIZE=2000`, `EDIT_TIME=10m`, locale `ru`.
 - Storage: same engine as Gate (BoltDB), separate files/volumes
@@ -309,7 +314,10 @@ internal-only remark42 port + header stripping).
 
 JWT (normative, HS256): claims `{iss:remark42,aud:stepik-discuss,
 exp:now+300,iat:now,jti:16B rand,user:{id:stepik_<id>,
-name:First Last|Stepik <id>,picture:avatar|""}}`. Never `admin:true/sub/email`.
+name:First Last|Stepik <id>,picture:avatar|"",attrs:{admin:true}|∅}}`.
+Teacher sessions mint `attrs:{admin:true}` (D0: required for `AdminOnly` +
+`/user` admin flag); students mint no `attrs`. Never `admin:true/sub/email`
+as top-level claims.
 
 Transport (normative): mint fresh on every `GET /auth/check → 200`. Return
 `200 {"ok":true}` + `X-JWT` + `X-XSRF-TOKEN:<jti>`. Caddy `copy_headers
@@ -328,6 +336,23 @@ does stock remark42 verify, exact 401/200 matrix, admin mapping for
 correctly, tampered JWT → 401, no-cookie → 401 — or written verdict that
 stock image can't do it → fallback (c). Freeze digest
 `sha256:980e0e76a6f241cd181f44c5b4d686f0d8cd7f552e11deb3bdcba223b2c3b866` here after `imagetools inspect`.
+
+**D0 VERDICT 2026-09-17 (local docker, `spike/`): GREEN — (b) works with
+stock `v1.16.4@sha256:980e…`, no fallback needed.** Matrix:
+teacher/student `GET /user?site=` → `200` attributed (`stepik_1182644732`
+`admin:true` / `stepik_1190530325` `admin:false`); tampered/expired/
+no-cookie → `401`; teacher+student `POST /comment?site=` → `201` each
+attributed; teacher `GET /admin/blocked?site=` → `200`, student → `403`.
+Four integration findings (all implemented in `spike/`, `deploy/`, `gate/`):
+(a) proxy must `strip_prefix /discuss` (`handle_path`) — remark42 serves
+API+web at root, prefixed `/user` → `404`; (b) custom `stepik` placeholder
+provider mandatory — zero providers ⇒ every JWT rejected
+(`provider is not allowed`), dummy `cid/csec` so remark42-login never
+completes; (c) `?site=` mandatory on protected calls (`matchSiteID` → `403`
+without); (d) teacher claims need `user.attrs.admin=true` (`AdminOnly`
+checks claims, not `ADMIN_SHARED_ID` alone). Non-blocking note: remark42
+`failed to set title, domain not allowed` WARN in spike (title extractor
+allowlist) — harmless, Gate renders its own shells.
 
 - Why most secure: identity is cryptographically verified (HMAC with
   `REMARK_JWT_SECRET` from VPS `.env`), not a spoofable plain header; even if
@@ -562,7 +587,8 @@ FINAL claim):
   else 503, definitive shrink + history kept (see §5).
 - Q3 remark42 pin: `v1.16.4@sha256:980e0e76a6f241cd181f44c5b4d686f0d8cd7f552e11deb3bdcba223b2c3b866`, single secret
   `REMARK_JWT_SECRET`, `SITE/REMARK_URL/AUTH_ANON/ADMIN_SHARED_ID/
-  AUTH_TTL_JWT=5m/AVATAR_PROXY/MAX_COMMENT_SIZE/EDIT_TIME` (see §6).
+  AUTH_TTL_JWT=5m/AVATAR_PROXY/MAX_COMMENT_SIZE/EDIT_TIME` + placeholder
+  custom provider `stepik` (D0-mandatory, see §6/§6.1).
 - Q4 JWT transport: fresh mint on `/auth/check→200`, `X-JWT+X-XSRF-TOKEN`,
   Caddy `copy_headers`, rotation ≤5m (see §6.1).
 - Q5/Q6 proxy: `forward_auth` ONLY on `/discuss/*`, Gate `:8081` canonical

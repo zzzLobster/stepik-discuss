@@ -3,7 +3,10 @@
 	request_header -X-Forwarded-For
 	request_header CF-Connecting-IP {http.request.remote.host}
 
-	handle /discuss/* {
+	handle_path /discuss/* {
+		# remark42 serves API+web at ROOT (/api/..., /web/...); REMARK_URL path
+		# prefix is URL-generation only. handle_path strips /discuss so upstream
+		# sees root paths (verified: /discuss/api/v1/user->404, /api/v1/user->401).
 		request_header -Remote-User
 		reverse_proxy remark42:8080 {
 			header_up X-JWT {http.request.header.X-JWT}

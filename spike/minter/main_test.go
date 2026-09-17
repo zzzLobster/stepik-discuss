@@ -9,9 +9,9 @@ import (
 	gatejwt "github.com/zzzLobster/stepik-discuss/gate/jwt"
 )
 
-func mustMint(t *testing.T, secret, site string, uid int64, name string) (string, string) {
+func mustMint(t *testing.T, secret, site string, uid int64, name string, admin bool) (string, string) {
 	t.Helper()
-	signed, jti, err := gatejwt.Mint(secret, site, uid, name, "")
+	signed, jti, err := gatejwt.Mint(secret, site, uid, name, "", admin)
 	if err != nil {
 		t.Fatalf("mint uid=%d: %v", uid, err)
 	}
@@ -49,10 +49,10 @@ func TestSpikeMatrix(t *testing.T) {
 	const secret = "spike-test-secret"
 	const site = "stepik-discuss"
 
-	teacherJWT, _ := mustMint(t, secret, site, 1182644732, "Teacher")
-	studentJWT, _ := mustMint(t, secret, site, 1190530325, "Spike Student")
+	teacherJWT, _ := mustMint(t, secret, site, 1182644732, "Teacher", true)
+	studentJWT, _ := mustMint(t, secret, site, 1190530325, "Spike Student", false)
 
-	expiredJWT, _, err := gatejwt.MintWithTTL(secret, site, 1190530325, "Spike Student", "", -time.Minute)
+	expiredJWT, _, err := gatejwt.MintWithTTL(secret, site, 1190530325, "Spike Student", "", -time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,12 +77,15 @@ func TestSpikeMatrix(t *testing.T) {
 
 func TestSpikeAdminMapping(t *testing.T) {
 	const adminSharedID = "stepik_1182644732"
-	teacherJWT, _ := mustMint(t, "s", "stepik-discuss", 1182644732, "Teacher")
+	teacherJWT, _ := mustMint(t, "s", "stepik-discuss", 1182644732, "Teacher", true)
 	claims := verify(t, "s", "stepik-discuss", teacherJWT)
 	if claims.User.ID != adminSharedID {
 		t.Errorf("teacher user.id = %q, ADMIN_SHARED_ID = %q: admin mapping broken", claims.User.ID, adminSharedID)
 	}
-	studentJWT, _ := mustMint(t, "s", "stepik-discuss", 1190530325, "Spike Student")
+	if claims.User.Attributes["admin"] != true {
+		t.Errorf("teacher attrs = %v, want admin:true for AdminOnly middleware", claims.User.Attributes)
+	}
+	studentJWT, _ := mustMint(t, "s", "stepik-discuss", 1190530325, "Spike Student", false)
 	student := verify(t, "s", "stepik-discuss", studentJWT)
 	if student.User.ID == adminSharedID {
 		t.Error("student maps to admin id")

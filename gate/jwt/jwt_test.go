@@ -24,7 +24,7 @@ func parse(t *testing.T, secret, audience, signed string) *Claims {
 }
 
 func TestMint_shape(t *testing.T) {
-	signed, jti, err := Mint("test-secret-0123456789", "stepik-discuss", 1182644732, "Teacher Name", "https://cdn/avatar.png")
+	signed, jti, err := Mint("test-secret-0123456789", "stepik-discuss", 1182644732, "Teacher Name", "https://cdn/avatar.png", true)
 	if err != nil {
 		t.Fatalf("Mint failed: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestMint_shape(t *testing.T) {
 }
 
 func TestMint_studentAttribution(t *testing.T) {
-	signed, _, err := Mint("s", "stepik-discuss", 1190530325, "Spike Student", "")
+	signed, _, err := Mint("s", "stepik-discuss", 1190530325, "Spike Student", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,8 +72,27 @@ func TestMint_studentAttribution(t *testing.T) {
 	}
 }
 
-func TestMint_neverAdminSubEmail(t *testing.T) {
-	signed, _, err := Mint("s", "stepik-discuss", 1, "N", "")
+func TestMint_adminAttr(t *testing.T) {
+	teacher, _, err := Mint("s", "stepik-discuss", 1182644732, "Teacher", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tc := parse(t, "s", "stepik-discuss", teacher)
+	if tc.User.Attributes["admin"] != true {
+		t.Errorf("teacher attrs = %v, want map[admin:true]", tc.User.Attributes)
+	}
+	student, _, err := Mint("s", "stepik-discuss", 1190530325, "Student", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc := parse(t, "s", "stepik-discuss", student)
+	if len(sc.User.Attributes) != 0 {
+		t.Errorf("student attrs = %v, want empty", sc.User.Attributes)
+	}
+}
+
+func TestMint_neverSubEmail(t *testing.T) {
+	signed, _, err := Mint("s", "stepik-discuss", 1, "N", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +110,7 @@ func TestMint_neverAdminSubEmail(t *testing.T) {
 }
 
 func TestMint_tamperedRejected(t *testing.T) {
-	signed, jti, err := Mint("s", "stepik-discuss", 1190530325, "Spike Student", "")
+	signed, jti, err := Mint("s", "stepik-discuss", 1190530325, "Spike Student", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +130,7 @@ func TestMint_tamperedRejected(t *testing.T) {
 }
 
 func TestMint_expiredRejected(t *testing.T) {
-	signed, _, err := MintWithTTL("s", "stepik-discuss", 1190530325, "Spike Student", "", -time.Minute)
+	signed, _, err := MintWithTTL("s", "stepik-discuss", 1190530325, "Spike Student", "", -time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +143,7 @@ func TestMint_expiredRejected(t *testing.T) {
 }
 
 func TestMint_wrongSecretRejected(t *testing.T) {
-	signed, _, err := Mint("correct", "stepik-discuss", 1, "N", "")
+	signed, _, err := Mint("correct", "stepik-discuss", 1, "N", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +156,7 @@ func TestMint_wrongSecretRejected(t *testing.T) {
 }
 
 func TestMint_wrongAudienceRejected(t *testing.T) {
-	signed, _, err := Mint("s", "stepik-discuss", 1, "N", "")
+	signed, _, err := Mint("s", "stepik-discuss", 1, "N", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +171,7 @@ func TestMint_wrongAudienceRejected(t *testing.T) {
 func TestMint_jtiUnique(t *testing.T) {
 	seen := map[string]bool{}
 	for range 10 {
-		_, jti, err := Mint("s", "stepik-discuss", 1, "N", "")
+		_, jti, err := Mint("s", "stepik-discuss", 1, "N", "", false)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -72,6 +72,16 @@ services:
       AVATAR_PROXY: "true"
       MAX_COMMENT_SIZE: "2000"
       EDIT_TIME: 10m
+      # Placeholder custom provider "stepik" (D0-verified 2026-09-17, see plan §6.1):
+      # go-pkgz/auth rejects ALL JWT when zero providers enabled
+      # ("provider is not allowed"). Dummy cid/csec (non-secrets): login via
+      # remark42 can never complete; all identity comes from Gate-minted JWT.
+      AUTH_CUSTOM_NAME: stepik
+      AUTH_CUSTOM_CID: ${AUTH_CUSTOM_CID:-spike-placeholder-never-completes}
+      AUTH_CUSTOM_CSEC: ${AUTH_CUSTOM_CSEC:-spike-placeholder-never-completes}
+      AUTH_CUSTOM_AUTH_URL: https://stepik.org/oauth2/authorize/
+      AUTH_CUSTOM_TOKEN_URL: https://stepik.org/oauth2/token/
+      AUTH_CUSTOM_INFO_URL: https://stepik.org/api/users/1182644732
     volumes:
       - remark-data:/srv/var
     networks:

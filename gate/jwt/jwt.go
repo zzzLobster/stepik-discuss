@@ -10,9 +10,10 @@ import (
 )
 
 type RemarkUser struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Picture string `json:"picture"`
+	ID         string         `json:"id"`
+	Name       string         `json:"name"`
+	Picture    string         `json:"picture"`
+	Attributes map[string]any `json:"attrs,omitempty"`
 }
 
 type Claims struct {
@@ -20,17 +21,25 @@ type Claims struct {
 	User RemarkUser `json:"user"`
 }
 
-func Mint(secret, audience string, uid int64, name, picture string) (string, string, error) {
-	return MintWithTTL(secret, audience, uid, name, picture, 5*time.Minute)
+func Mint(secret, audience string, uid int64, name, picture string, admin bool) (string, string, error) {
+	return MintWithTTL(secret, audience, uid, name, picture, 5*time.Minute, admin)
 }
 
-func MintWithTTL(secret, audience string, uid int64, name, picture string, ttl time.Duration) (string, string, error) {
+func MintWithTTL(secret, audience string, uid int64, name, picture string, ttl time.Duration, admin bool) (string, string, error) {
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
 		return "", "", err
 	}
 	jti := hex.EncodeToString(raw)
 	now := time.Now()
+	user := RemarkUser{
+		ID:      "stepik_" + strconv.FormatInt(uid, 10),
+		Name:    name,
+		Picture: picture,
+	}
+	if admin {
+		user.Attributes = map[string]any{"admin": true}
+	}
 	claims := Claims{
 		RegisteredClaims: jwtlib.RegisteredClaims{
 			Issuer:    "remark42",
@@ -39,11 +48,7 @@ func MintWithTTL(secret, audience string, uid int64, name, picture string, ttl t
 			IssuedAt:  jwtlib.NewNumericDate(now),
 			ID:        jti,
 		},
-		User: RemarkUser{
-			ID:      "stepik_" + strconv.FormatInt(uid, 10),
-			Name:    name,
-			Picture: picture,
-		},
+		User: user,
 	}
 	tok := jwtlib.NewWithClaims(jwtlib.SigningMethodHS256, claims)
 	signed, err := tok.SignedString([]byte(secret))

@@ -13,7 +13,7 @@ services:
       - app
 
   remark42:
-    image: ghcr.io/umputun/remark42:v1.16.4
+    image: ghcr.io/umputun/remark42:v1.16.4@sha256:980e0e76a6f241cd181f44c5b4d686f0d8cd7f552e11deb3bdcba223b2c3b866
     environment:
       SECRET: ${REMARK_JWT_SECRET:-spike-local-secret-spike-local-secret}
       SITE: stepik-discuss
@@ -25,6 +25,17 @@ services:
       MAX_COMMENT_SIZE: "2000"
       EDIT_TIME: 10m
       DEBUG: "true"
+      # Placeholder custom provider "stepik": satisfies go-pkgz/auth provider
+      # allowlist so Gate-minted stepik_<id> JWTs verify (spike 2026-09-17:
+      # zero providers => "provider is not allowed" for ALL tokens).
+      # Login via remark42 can NEVER complete (dummy client id/secret);
+      # all identity comes from Gate-minted JWT only.
+      AUTH_CUSTOM_NAME: stepik
+      AUTH_CUSTOM_CID: spike-placeholder-never-completes
+      AUTH_CUSTOM_CSEC: spike-placeholder-never-completes
+      AUTH_CUSTOM_AUTH_URL: https://stepik.org/oauth2/authorize/
+      AUTH_CUSTOM_TOKEN_URL: https://stepik.org/oauth2/token/
+      AUTH_CUSTOM_INFO_URL: https://stepik.org/api/users/1182644732
     volumes:
       - remark-data:/srv/var
     networks:

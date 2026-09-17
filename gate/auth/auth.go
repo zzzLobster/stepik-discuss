@@ -363,7 +363,7 @@ func (c *Checker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (c *Checker) mint(w http.ResponseWriter, r *http.Request, sess *sessions.SessionRecord, cid int64, stale bool, start time.Time, cfRay string) {
 	_ = r
-	signed, jti, err := gatejwt.Mint(c.Cfg.RemarkJWTSecret, c.Cfg.Site, sess.StepikUserID, sess.FIO, sess.AvatarURL)
+	signed, jti, err := gatejwt.Mint(c.Cfg.RemarkJWTSecret, c.Cfg.Site, sess.StepikUserID, sess.FIO, sess.AvatarURL, sess.IsTeacher)
 	if err != nil {
 		c.Log.Error("jwt mint failed", "uid", sess.StepikUserID)
 		c.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": codeTransient})

@@ -45,7 +45,11 @@ stepik.study67.fyi {
 		reverse_proxy gate:8081
 	}
 
-	handle /discuss/* {
+	# remark42 serves API+web at ROOT (/api/..., /web/...); REMARK_URL path
+	# prefix is URL-generation only. handle_path strips /discuss so upstream
+	# sees root paths (spike-verified 2026-09-17: prefixed /user->404).
+	# X-Forwarded-Uri keeps ?query (cid comes from ?url=/Referer), path strip safe.
+	handle_path /discuss/* {
 		request_header -X-JWT
 		request_header -X-XSRF-TOKEN
 		request_header -Remote-User

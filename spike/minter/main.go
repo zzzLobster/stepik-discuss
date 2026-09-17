@@ -65,18 +65,22 @@ func main() {
 		os.Exit(2)
 	}
 	client := &http.Client{Timeout: 15 * time.Second}
+	// remark42 matchSiteID requires explicit ?site= matching token aud on all
+	// protected routes (bundled frontend always sends it); omit => 403.
+	userURL := *base + "/api/v1/user?site=" + *site
+	commentURL := *base + "/api/v1/comment?site=" + *site
 
-	teacherJWT, teacherJTI, err := gatejwt.Mint(*secret, *site, 1182644732, "Михаил Гаврилов", "")
+	teacherJWT, teacherJTI, err := gatejwt.Mint(*secret, *site, 1182644732, "Михаил Гаврилов", "", true)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "mint teacher:", err)
 		os.Exit(2)
 	}
-	studentJWT, studentJTI, err := gatejwt.Mint(*secret, *site, 1190530325, "Spike Student", "")
+	studentJWT, studentJTI, err := gatejwt.Mint(*secret, *site, 1190530325, "Spike Student", "", false)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "mint student:", err)
 		os.Exit(2)
 	}
-	expiredJWT, expiredJTI, err := gatejwt.MintWithTTL(*secret, *site, 1190530325, "Spike Student", "", -time.Minute)
+	expiredJWT, expiredJTI, err := gatejwt.MintWithTTL(*secret, *site, 1190530325, "Spike Student", "", -time.Minute, false)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "mint expired:", err)
 		os.Exit(2)
@@ -91,21 +95,21 @@ func main() {
 	}
 	var results []verdict
 
-	st, body := call(client, http.MethodGet, *base+"/api/v1/user", teacherJWT, teacherJTI, nil)
+	st, body := call(client, http.MethodGet, userURL, teacherJWT, teacherJTI, nil)
 	results = append(results, verdict{"valid teacher GET /user", st, 200, body})
 	var teacher userInfo
 	_ = json.Unmarshal(body, &teacher)
 
-	st, body = call(client, http.MethodGet, *base+"/api/v1/user", studentJWT, studentJTI, nil)
+	st, body = call(client, http.MethodGet, userURL, studentJWT, studentJTI, nil)
 	results = append(results, verdict{"valid student GET /user", st, 200, body})
 
-	st, body = call(client, http.MethodGet, *base+"/api/v1/user", tampered, studentJTI, nil)
+	st, body = call(client, http.MethodGet, userURL, tampered, studentJTI, nil)
 	results = append(results, verdict{"tampered GET /user", st, 401, body})
 
-	st, body = call(client, http.MethodGet, *base+"/api/v1/user", expiredJWT, expiredJTI, nil)
+	st, body = call(client, http.MethodGet, userURL, expiredJWT, expiredJTI, nil)
 	results = append(results, verdict{"expired GET /user", st, 401, body})
 
-	st, body = call(client, http.MethodGet, *base+"/api/v1/user", "", "", nil)
+	st, body = call(client, http.MethodGet, userURL, "", "", nil)
 	results = append(results, verdict{"no-cookie GET /user", st, 401, body})
 
 	pageURL := "https://stepik.study67.fyi/class/82866"
@@ -113,13 +117,22 @@ func main() {
 		"text":    "spike teacher probe",
 		"locator": map[string]string{"site": *site, "url": pageURL},
 	}
-	st, body = call(client, http.MethodPost, *base+"/api/v1/comment", teacherJWT, teacherJTI, comment)
+	st, body = call(client, http.MethodPost, commentURL, teacherJWT, teacherJTI, comment)
 	teacherPost := st == http.StatusCreated || st == http.StatusOK
 	fmt.Printf("teacher POST /comment -> %d\n", st)
 	comment["text"] = "spike student probe"
-	st, body = call(client, http.MethodPost, *base+"/api/v1/comment", studentJWT, studentJTI, comment)
+	time.Sleep(3 * time.Second) // stay under remark42 update limiter (0.5/s default)
+	st, body = call(client, http.MethodPost, commentURL, studentJWT, studentJTI, comment)
 	studentPost := st == http.StatusCreated || st == http.StatusOK
 	fmt.Printf("student POST /comment -> %d\n", st)
+
+	// functional admin probe: teacher must reach admin API, student must not.
+	// (/user admin flag alone is display-only; AdminOnly middleware is authoritative.)
+	adminURL := *base + "/api/v1/admin/blocked?site=" + *site
+	st, body = call(client, http.MethodGet, adminURL, teacherJWT, teacherJTI, nil)
+	results = append(results, verdict{"teacher GET /admin/blocked", st, 200, body})
+	st, body = call(client, http.MethodGet, adminURL, studentJWT, studentJTI, nil)
+	results = append(results, verdict{"student GET /admin/blocked", st, 403, body})
 
 	ok := true
 	for _, r := range results {
@@ -128,7 +141,7 @@ func main() {
 			mark = "FAIL"
 			ok = false
 		}
-		fmt.Printf("[%s] %s -> %d (want %d)\n", mark, r.name, r.status, r.want)
+		fmt.Printf("[%s] %s -> %d (want %d) body=%.200s\n", mark, r.name, r.status, r.want, strings.TrimSpace(string(r.body)))
 	}
 	for _, want := range []struct {
 		name string
