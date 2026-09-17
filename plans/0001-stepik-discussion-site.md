@@ -280,7 +280,7 @@ Boot with `STEPIK_CLIENT_ID=placeholder` → `/auth/login` `503` `"Вход
 
 ## 6. remark42 config (this scale)
 
-- Image (pinned): `ghcr.io/umputun/remark42:v1.16.4@sha256:<FROZEN_AT_SPIKE>`
+- Image (pinned): `ghcr.io/umputun/remark42:v1.16.4@sha256:980e0e76a6f241cd181f44c5b4d686f0d8cd7f552e11deb3bdcba223b2c3b866`
   (resolve via `imagetools inspect` at spike, commit digest, never `:latest`).
   Caddy `2.11.4-alpine`, Go `1.27.1`.
 - Single secret: `.env REMARK_JWT_SECRET=<64hex>` → `remark42.SECRET=
@@ -327,7 +327,7 @@ does stock remark42 verify, exact 401/200 matrix, admin mapping for
 `stepik_1182644732`. Exit criteria: teacher+student posts attributed
 correctly, tampered JWT → 401, no-cookie → 401 — or written verdict that
 stock image can't do it → fallback (c). Freeze digest
-`sha256:<FROZEN_AT_SPIKE>` here after `imagetools inspect`.
+`sha256:980e0e76a6f241cd181f44c5b4d686f0d8cd7f552e11deb3bdcba223b2c3b866` here after `imagetools inspect`.
 
 - Why most secure: identity is cryptographically verified (HMAC with
   `REMARK_JWT_SECRET` from VPS `.env`), not a spoofable plain header; even if
@@ -391,7 +391,7 @@ redirect URI `https://stepik.study67.fyi/auth/callback`.
 ### 7.2 Compose (Ubuntu 24, Docker + docker compose, you deploy)
 
 Pinned: Go `1.27.1` (builder + `go.mod`), Caddy `2.11.4-alpine`, remark42
-`v1.16.4@sha256:<FROZEN_AT_SPIKE>`.
+`v1.16.4@sha256:980e0e76a6f241cd181f44c5b4d686f0d8cd7f552e11deb3bdcba223b2c3b866`.
 Repo layout (this repo): `gate/` (Go module
 `github.com/zzzLobster/stepik-discuss`), `deploy/Caddyfile`,
 `deploy/compose.yml`, `deploy/.env.example` (keys only, no values).
@@ -420,7 +420,7 @@ Env table (canonical; see `deploy/.env.example`):
 - `gate`: **Go 1.27.1** multi-stage image you maintain (static binary),
   volume `gate-data:/data` (BoltDB `/data/gate.db` — same engine as remark42,
   separate file/volume; see §3). `GATE_TOKEN_KEY` required at boot.
-- `remark42`: `ghcr.io/umputun/remark42:v1.16.4@sha256:<FROZEN_AT_SPIKE>`,
+- `remark42`: `ghcr.io/umputun/remark42:v1.16.4@sha256:980e0e76a6f241cd181f44c5b4d686f0d8cd7f552e11deb3bdcba223b2c3b866`,
   volume `remark-data:/srv/var` (BoltDB `remark.db`).
 - One docker bridge network `app`; no `ports:` on backends; only Caddy
   `80/443`. `docker compose up -d`.
@@ -560,7 +560,7 @@ FINAL claim):
 - Q8 revocation: `GATE_VERIFY_TTL=6h` (canonical — no stale TTL remains),
   `GATE_RETRY_AFTER=15m+jitter`, `GATE_MAX_STALE=48h`, stale + `X-Gate-Stale:1`
   else 503, definitive shrink + history kept (see §5).
-- Q3 remark42 pin: `v1.16.4@sha256:<FROZEN_AT_SPIKE>`, single secret
+- Q3 remark42 pin: `v1.16.4@sha256:980e0e76a6f241cd181f44c5b4d686f0d8cd7f552e11deb3bdcba223b2c3b866`, single secret
   `REMARK_JWT_SECRET`, `SITE/REMARK_URL/AUTH_ANON/ADMIN_SHARED_ID/
   AUTH_TTL_JWT=5m/AVATAR_PROXY/MAX_COMMENT_SIZE/EDIT_TIME` (see §6).
 - Q4 JWT transport: fresh mint on `/auth/check→200`, `X-JWT+X-XSRF-TOKEN`,
@@ -582,4 +582,4 @@ FINAL claim):
 Remaining non-blocking pendings (each documented where it lands): prod
 `client_id` (runtime env, Phase 0), VPS IP (DNS time), outsider Wave 2
 account (pre-announce), backups (later phase), spike digest freeze
-(`sha256:<FROZEN_AT_SPIKE>` at D0).
+(`sha256:980e0e76a6f241cd181f44c5b4d686f0d8cd7f552e11deb3bdcba223b2c3b866` at D0).

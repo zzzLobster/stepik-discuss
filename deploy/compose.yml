@@ -1,0 +1,98 @@
+services:
+  caddy:
+    image: caddy:2.11.4-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    environment:
+      CADDY_GATE_TOKEN: ${CADDY_GATE_TOKEN}
+    depends_on:
+      - gate
+      - remark42
+    networks:
+      - app
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  gate:
+    build:
+      context: ..
+      dockerfile: gate/Dockerfile
+    environment:
+      STEPIK_CLIENT_ID: ${STEPIK_CLIENT_ID:-placeholder}
+      STEPIK_CLIENT_SECRET: ${STEPIK_CLIENT_SECRET}
+      STEPIK_REDIRECT_URL: ${STEPIK_REDIRECT_URL:-https://stepik.study67.fyi/auth/callback}
+      TEACHER_ID: ${TEACHER_ID:-1182644732}
+      GATE_TOKEN_KEY: ${GATE_TOKEN_KEY}
+      REMARK_JWT_SECRET: ${REMARK_JWT_SECRET}
+      CADDY_GATE_TOKEN: ${CADDY_GATE_TOKEN}
+      GATE_VERIFY_TTL: ${GATE_VERIFY_TTL:-6h}
+      GATE_RETRY_AFTER: ${GATE_RETRY_AFTER:-15m}
+      GATE_MAX_STALE: ${GATE_MAX_STALE:-48h}
+      SITE: ${SITE:-stepik-discuss}
+      REMARK_URL: ${REMARK_URL:-https://stepik.study67.fyi/discuss}
+    volumes:
+      - gate-data:/data
+    networks:
+      - app
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  remark42:
+    # Pinned 2026-09-17 via `docker buildx imagetools inspect ghcr.io/umputun/remark42:v1.16.4`. Never use :latest.
+    image: ghcr.io/umputun/remark42:v1.16.4@sha256:980e0e76a6f241cd181f44c5b4d686f0d8cd7f552e11deb3bdcba223b2c3b866
+    environment:
+      SECRET: ${REMARK_JWT_SECRET}
+      SITE: ${SITE:-stepik-discuss}
+      REMARK_URL: ${REMARK_URL:-https://stepik.study67.fyi/discuss}
+      AUTH_ANON: "false"
+      ADMIN_SHARED_ID: ${ADMIN_SHARED_ID:-stepik_1182644732}
+      AUTH_TTL_JWT: 5m
+      AVATAR_PROXY: "true"
+      MAX_COMMENT_SIZE: "2000"
+      EDIT_TIME: 10m
+    volumes:
+      - remark-data:/srv/var
+    networks:
+      - app
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  gate-data:
+  remark-data:
+  caddy-data:
+
+networks:
+  app:
+    driver: bridge

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Обсуждения классов Stepik</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="manifest" href="/manifest.json">
+</head>
+<body>
+<main>
+<h1>Обсуждения классов</h1>
+{{if .LoggedIn}}
+<p>Вы вошли как {{.FIO}}.</p>
+{{if .TeacherBanner}}<p class="banner">{{.TeacherBanner}}</p>{{end}}
+{{if .Classes}}
+<h2>Ваши классы</h2>
+<ul>
+{{range .Classes}}<li><a href="/class/{{.CID}}">{{.Title}}</a></li>{{end}}
+</ul>
+{{else}}
+<p>Пока нет доступных классов.</p>
+{{end}}
+<form method="post" action="/auth/logout"><button type="submit">Выйти из аккаунта? Да, выйти</button></form>
+{{else}}
+<p>{{.Consent}}</p>
+<p><a class="button" href="/auth/login">{{.LoginButton}}</a></p>
+{{end}}
+</main>
+</body>
+</html>

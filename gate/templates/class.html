@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{{.Title}} — Обсуждения</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="manifest" href="/manifest.json">
+</head>
+<body>
+<main>
+<p><a href="/">← Все классы</a> · {{.FIO}}</p>
+<h1>{{.Title}}</h1>
+<p><a href="{{.StepikURL}}">Открыть класс на Stepik</a></p>
+<div id="remark42"></div>
+<script>
+var remark_config = {
+  host: "{{.EmbedHost}}",
+  site_id: "{{.SiteID}}",
+  url: "{{.PageURL}}"
+};
+</script>
+<script src="{{.EmbedHost}}/web/embed.js" defer></script>
+<noscript>Для обсуждений нужен включённый JavaScript.</noscript>
+</main>
+</body>
+</html>

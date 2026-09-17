@@ -1,0 +1,5 @@
+# stepik-discuss — never commit secrets or live databases.
+deploy/.env
+*.db
+gate/gate
+spike/minter/minter

@@ -1,0 +1,38 @@
+# spike-local only: no resource limits or log rotation by design.
+# Never reuse this file for VPS deploy; see deploy/compose.yml.
+services:
+  caddy:
+    image: caddy:2.11.4-alpine
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - remark42
+    networks:
+      - app
+
+  remark42:
+    image: ghcr.io/umputun/remark42:v1.16.4
+    environment:
+      SECRET: ${REMARK_JWT_SECRET:-spike-local-secret-spike-local-secret}
+      SITE: stepik-discuss
+      REMARK_URL: http://127.0.0.1:8080/discuss
+      AUTH_ANON: "false"
+      ADMIN_SHARED_ID: stepik_1182644732
+      AUTH_TTL_JWT: 5m
+      AVATAR_PROXY: "true"
+      MAX_COMMENT_SIZE: "2000"
+      EDIT_TIME: 10m
+      DEBUG: "true"
+    volumes:
+      - remark-data:/srv/var
+    networks:
+      - app
+
+volumes:
+  remark-data:
+
+networks:
+  app:
+    driver: bridge

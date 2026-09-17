@@ -1,0 +1,69 @@
+stepik.study67.fyi {
+	tls mjgavrilov@gmail.com
+
+	# Edge (Cloudflare orange-cloud -> Caddy -> gate): preserve inbound
+	# CF-Connecting-IP from Cloudflare (real client); only set from edge
+	# socket when missing (direct origin / healthchecks).
+	# trusted_proxies = Cloudflare ranges only (plan §5.3).
+	# Spoof tradeoff: direct-to-origin can forge CF-Connecting-IP (gate trusts
+	# docker-private peer), so lock origin firewall to Cloudflare ranges;
+	# ufw: allow 22,80,443 only (80/443 preferably Cloudflare-only).
+	request_header -X-Forwarded-For
+	@noCF header !CF-Connecting-IP
+	request_header @noCF CF-Connecting-IP {http.request.remote.host}
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin"
+		X-Robots-Tag "noindex"
+		-Server
+	}
+
+	@static {
+		path / /static/* /manifest.json /sw.js /robots.txt
+	}
+	handle @static {
+		reverse_proxy gate:8081
+	}
+
+	handle /healthz {
+		# Deep ?deep=1 requires Guard (token + private peer); Caddy injects
+		# token so edge deep works (direct without token still 404).
+		# Shallow remains public.
+		reverse_proxy gate:8081 {
+			header_up X-Gate-Auth {env.CADDY_GATE_TOKEN}
+		}
+	}
+
+	handle /class/* {
+		reverse_proxy gate:8081
+	}
+
+	handle /auth/* {
+		reverse_proxy gate:8081
+	}
+
+	handle /discuss/* {
+		request_header -X-JWT
+		request_header -X-XSRF-TOKEN
+		request_header -Remote-User
+		request_header -X-Auth-Token
+		request_header -X-Auth-User
+		forward_auth gate:8081 {
+			uri /auth/check
+			header_up X-Forwarded-Uri {uri}
+			header_up X-Gate-Auth {env.CADDY_GATE_TOKEN}
+			copy_headers X-JWT X-XSRF-TOKEN
+		}
+		reverse_proxy remark42:8080 {
+			header_up X-JWT {http.request.header.X-JWT}
+			header_up X-XSRF-TOKEN {http.request.header.X-XSRF-TOKEN}
+		}
+	}
+
+	handle {
+		respond "Not found" 404
+	}
+}

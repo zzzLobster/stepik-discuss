@@ -1,0 +1,453 @@
+package sessions
+
+import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"time"
+
+	bolt "go.etcd.io/bbolt"
+)
+
+var (
+	BucketSessions     = []byte("sessions")
+	BucketUserVersions = []byte("user_versions")
+	BucketTeacherToken = []byte("teacher_token")
+	BucketMeta         = []byte("meta")
+
+	KeyTeacherCurrent = []byte("current")
+	KeyGlobalEpoch    = []byte("global_epoch")
+	KeySchemaVersion  = []byte("schema_version")
+	SchemaVersion     = []byte("1")
+)
+
+const (
+	CookieSID    = "__Host-sid"
+	CookieBinder = "__Host-oa"
+
+	SIDMaxAgeSeconds    = 2592000
+	BinderMaxAgeSeconds = 600
+)
+
+type SessionRecord struct {
+	StepikUserID    int64             `json:"stepik_user_id"`
+	FIO             string            `json:"fio"`
+	AvatarURL       string            `json:"avatar_url"`
+	AllowedClassIDs []int64           `json:"allowed_class_ids"`
+	ClassTitles     map[string]string `json:"class_titles"`
+	IsTeacher       bool              `json:"is_teacher"`
+	CreatedAt       time.Time         `json:"created_at"`
+	LastVerifiedAt  time.Time         `json:"last_verified_at"`
+	NextRetryAt     time.Time         `json:"next_retry_at"`
+	ExpiresAt       time.Time         `json:"expires_at"`
+	LastSeenAt      time.Time         `json:"last_seen_at"`
+	UserVersion     uint64            `json:"user_version"`
+	GlobalEpoch     uint64            `json:"global_epoch"`
+	TokenCiphertext []byte            `json:"token_ciphertext"`
+	TokenNonce      []byte            `json:"token_nonce"`
+	TokenObtainedAt time.Time         `json:"token_obtained_at"`
+	TokenExpiresAt  time.Time         `json:"token_expires_at"`
+}
+
+type TeacherToken struct {
+	Ciphertext []byte    `json:"ciphertext"`
+	Nonce      []byte    `json:"nonce"`
+	ObtainedAt time.Time `json:"obtained_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	ExpiresIn  int       `json:"expires_in"`
+	OwnerUID   int64     `json:"owner_uid"`
+}
+
+type Store struct {
+	db  *bolt.DB
+	key [32]byte
+}
+
+func Open(path string, key []byte) (*Store, error) {
+	if len(key) != 32 {
+		return nil, errors.New("token key must be 32 bytes")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		return nil, err
+	}
+	s := &Store{db: db}
+	copy(s.key[:], key)
+	err = db.Update(func(tx *bolt.Tx) error {
+		for _, b := range [][]byte{BucketSessions, BucketUserVersions, BucketTeacherToken, BucketMeta} {
+			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
+				return err
+			}
+		}
+		meta := tx.Bucket(BucketMeta)
+		if meta.Get(KeySchemaVersion) == nil {
+			if err := meta.Put(KeySchemaVersion, SchemaVersion); err != nil {
+				return err
+			}
+		}
+		if meta.Get(KeyGlobalEpoch) == nil {
+			if err := meta.Put(KeyGlobalEpoch, []byte("0")); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Store) Close() error {
+	return s.db.Close()
+}
+
+func (s *Store) Ping() error {
+	return s.db.View(func(tx *bolt.Tx) error {
+		if tx.Bucket(BucketMeta).Get(KeySchemaVersion) == nil {
+			return errNoSchema()
+		}
+		return nil
+	})
+}
+
+func errNoSchema() error {
+	return errors.New("schema version missing")
+}
+
+func (s *Store) EncryptToken(plain string) (ct, nonce []byte, err error) {
+	block, err := aes.NewCipher(s.key[:])
+	if err != nil {
+		return nil, nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, nil, err
+	}
+	nonce = make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, nil, err
+	}
+	return gcm.Seal(nil, nonce, []byte(plain), nil), nonce, nil
+}
+
+func (s *Store) DecryptToken(ct, nonce []byte) (string, error) {
+	block, err := aes.NewCipher(s.key[:])
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	plain, err := gcm.Open(nil, nonce, ct, nil)
+	if err != nil {
+		return "", err
+	}
+	return string(plain), nil
+}
+
+func NewSID() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func NewBinder() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func SetSID(w http.ResponseWriter, sid string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     CookieSID,
+		Value:    sid,
+		Path:     "/",
+		MaxAge:   SIDMaxAgeSeconds,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func ClearSID(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     CookieSID,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func SetBinder(w http.ResponseWriter, v string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     CookieBinder,
+		Value:    v,
+		Path:     "/",
+		MaxAge:   BinderMaxAgeSeconds,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func ClearBinder(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     CookieBinder,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func (s *Store) TeacherTokenPlain(teacherID int64) (string, bool) {
+	tok, err := s.GetTeacherToken()
+	if err != nil {
+		return "", false
+	}
+	if tok == nil {
+		return "", false
+	}
+	if tok.OwnerUID != teacherID {
+		return "", false
+	}
+	if time.Now().After(tok.ExpiresAt.Add(-60 * time.Second)) {
+		return "", false
+	}
+	plain, err := s.DecryptToken(tok.Ciphertext, tok.Nonce)
+	if err != nil {
+		return "", false
+	}
+	return plain, true
+}
+
+func (s *Store) GetSession(sid string) (*SessionRecord, error) {
+	var rec *SessionRecord
+	err := s.db.View(func(tx *bolt.Tx) error {
+		raw := tx.Bucket(BucketSessions).Get([]byte(sid))
+		if raw == nil {
+			return nil
+		}
+		var r SessionRecord
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return err
+		}
+		rec = &r
+		return nil
+	})
+	return rec, err
+}
+
+func (s *Store) PutSession(sid string, rec *SessionRecord) error {
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(BucketSessions).Put([]byte(sid), raw)
+	})
+}
+
+func (s *Store) DeleteSession(sid string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(BucketSessions).Delete([]byte(sid))
+	})
+}
+
+func (s *Store) GetUserVersion(uid int64) (uint64, error) {
+	var v uint64
+	err := s.db.View(func(tx *bolt.Tx) error {
+		raw := tx.Bucket(BucketUserVersions).Get([]byte(strconv.FormatInt(uid, 10)))
+		if raw == nil {
+			return nil
+		}
+		n, err := strconv.ParseUint(string(raw), 10, 64)
+		if err != nil {
+			return err
+		}
+		v = n
+		return nil
+	})
+	return v, err
+}
+
+func (s *Store) BumpUserVersion(uid int64) (uint64, error) {
+	var v uint64
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(BucketUserVersions)
+		k := []byte(strconv.FormatInt(uid, 10))
+		var cur uint64
+		if raw := b.Get(k); raw != nil {
+			n, err := strconv.ParseUint(string(raw), 10, 64)
+			if err != nil {
+				return err
+			}
+			cur = n
+		}
+		cur++
+		v = cur
+		return b.Put(k, []byte(strconv.FormatUint(cur, 10)))
+	})
+	return v, err
+}
+
+func (s *Store) GetGlobalEpoch() (uint64, error) {
+	var v uint64
+	err := s.db.View(func(tx *bolt.Tx) error {
+		raw := tx.Bucket(BucketMeta).Get(KeyGlobalEpoch)
+		if raw == nil {
+			return nil
+		}
+		n, err := strconv.ParseUint(string(raw), 10, 64)
+		if err != nil {
+			return err
+		}
+		v = n
+		return nil
+	})
+	return v, err
+}
+
+func (s *Store) BumpGlobalEpoch() (uint64, error) {
+	var v uint64
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(BucketMeta)
+		var cur uint64
+		if raw := b.Get(KeyGlobalEpoch); raw != nil {
+			n, err := strconv.ParseUint(string(raw), 10, 64)
+			if err != nil {
+				return err
+			}
+			cur = n
+		}
+		cur++
+		v = cur
+		return b.Put(KeyGlobalEpoch, []byte(strconv.FormatUint(cur, 10)))
+	})
+	return v, err
+}
+
+func (s *Store) GetTeacherToken() (*TeacherToken, error) {
+	var tok *TeacherToken
+	err := s.db.View(func(tx *bolt.Tx) error {
+		raw := tx.Bucket(BucketTeacherToken).Get(KeyTeacherCurrent)
+		if raw == nil {
+			return nil
+		}
+		var t TeacherToken
+		if err := json.Unmarshal(raw, &t); err != nil {
+			return err
+		}
+		tok = &t
+		return nil
+	})
+	return tok, err
+}
+
+func (s *Store) PutTeacherToken(tok *TeacherToken) error {
+	raw, err := json.Marshal(tok)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(BucketTeacherToken).Put(KeyTeacherCurrent, raw)
+	})
+}
+
+func (s *Store) StripClass(uid, cid int64) (int, error) {
+	changed := 0
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(BucketSessions)
+		c := b.Cursor()
+		for k, raw := c.First(); k != nil; k, raw = c.Next() {
+			var r SessionRecord
+			if err := json.Unmarshal(raw, &r); err != nil {
+				continue
+			}
+			if r.StepikUserID != uid {
+				continue
+			}
+			kept := r.AllowedClassIDs[:0]
+			for _, id := range r.AllowedClassIDs {
+				if id != cid {
+					kept = append(kept, id)
+				}
+			}
+			if len(kept) == len(r.AllowedClassIDs) {
+				continue
+			}
+			r.AllowedClassIDs = kept
+			if r.ClassTitles != nil {
+				delete(r.ClassTitles, strconv.FormatInt(cid, 10))
+			}
+			next, err := json.Marshal(&r)
+			if err != nil {
+				return err
+			}
+			if err := b.Put(k, next); err != nil {
+				return err
+			}
+			changed++
+		}
+		return nil
+	})
+	return changed, err
+}
+
+func (s *Store) StartSweeper(stop <-chan struct{}) {
+	t := time.NewTicker(time.Hour)
+	go func() {
+		defer t.Stop()
+		_ = s.sweep()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				_ = s.sweep()
+			}
+		}
+	}()
+}
+
+func (s *Store) sweep() error {
+	cutoff := time.Now().Add(-7 * 24 * time.Hour)
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(BucketSessions)
+		c := b.Cursor()
+		for k, raw := c.First(); k != nil; k, raw = c.Next() {
+			var r SessionRecord
+			if err := json.Unmarshal(raw, &r); err != nil {
+				continue
+			}
+			if r.ExpiresAt.Before(cutoff) {
+				if err := b.Delete(k); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}

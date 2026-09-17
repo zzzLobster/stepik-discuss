@@ -1,0 +1,17 @@
+:80 {
+	request_header -CF-Connecting-IP
+	request_header -X-Forwarded-For
+	request_header CF-Connecting-IP {http.request.remote.host}
+
+	handle /discuss/* {
+		request_header -Remote-User
+		reverse_proxy remark42:8080 {
+			header_up X-JWT {http.request.header.X-JWT}
+			header_up X-XSRF-TOKEN {http.request.header.X-XSRF-TOKEN}
+		}
+	}
+
+	handle {
+		respond "spike: only /discuss/* is proxied" 404
+	}
+}
