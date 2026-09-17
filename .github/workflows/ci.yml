@@ -1,0 +1,82 @@
+# CI: hermetic unit tests + live D0 JWT spike against stock remark42.
+#
+# - unit job needs NO containers (BoltDB in t.TempDir, Stepik via intercept
+#   transport) — plain setup-go + go build/vet/test.
+# - spike job reuses spike/compose.yml (caddy + stock remark42, pinned digest)
+#   instead of testcontainers: it exercises the exact proxy config that ships,
+#   which is what D0 gates on (prefix strip, provider allowlist, ?site=).
+#   ubuntu-latest runners ship Docker + Compose, so no extra setup is needed.
+#   The spike secret is ephemeral per run and never committed.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: build, vet, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -count=1 ./...
+
+  spike:
+    name: D0 JWT spike (live remark42)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Generate ephemeral spike secret
+        run: echo "REMARK_JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
+      - name: Start spike stack
+        working-directory: spike
+        run: docker compose up -d
+
+      - name: Wait for remark42
+        working-directory: spike
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fs http://127.0.0.1:8080/discuss/api/v1/ping > /dev/null; then
+              echo "remark42 ready after ~$((i * 5))s"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "remark42 never became ready"
+          docker compose logs
+          exit 1
+
+      - name: Run JWT spike matrix
+        working-directory: spike
+        run: go run ./minter -secret "$REMARK_JWT_SECRET" -base http://127.0.0.1:8080/discuss
+
+      - name: Tear down spike stack
+        if: always()
+        working-directory: spike
+        run: docker compose down
