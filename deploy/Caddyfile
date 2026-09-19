@@ -1,4 +1,5 @@
 stepik.study67.fyi {
+	trusted_proxies cloudflare
 	tls mjgavrilov@gmail.com
 
 	# Edge (Cloudflare orange-cloud -> Caddy -> gate): preserve inbound
@@ -14,13 +15,18 @@ stepik.study67.fyi {
 
 	# Referer needs full path same-origin for Gate cid fallback on /discuss/web/* without ?url=;
 	# cross-origin stays origin-only.
+	@noEmbed {
+		not path /discuss/* /discuss/web/*
+	}
 	header {
 		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
 		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		X-Robots-Tag "noindex"
 		-Server
+	}
+	header @noEmbed {
+		X-Frame-Options "DENY"
 	}
 
 	@static {
@@ -35,6 +41,7 @@ stepik.study67.fyi {
 		# token so edge deep works (direct without token still 404).
 		# Shallow remains public.
 		reverse_proxy gate:8081 {
+			# CADDY_GATE_TOKEN env required; empty fails closed (Guard false -> 404).
 			header_up X-Gate-Auth {env.CADDY_GATE_TOKEN}
 		}
 	}
@@ -47,13 +54,44 @@ stepik.study67.fyi {
 		reverse_proxy gate:8081
 	}
 
+	handle /favicon.ico {
+		header Cache-Control "public, max-age=86400"
+		respond "" 204
+	}
+
 	# remark42 serves API+web at ROOT (/api/..., /web/...); REMARK_URL path
 	# prefix is URL-generation only. handle_path strips /discuss so upstream
 	# sees root paths (spike-verified 2026-09-17: prefixed /user->404).
 	# X-Forwarded-Uri keeps ?query (cid comes from ?url=/Referer), path strip safe.
+	# Public: static embed assets bypass gate auth. iframe.html subrequests
+	# (remark.mjs/css) carry Referer=/discuss/web/iframe.html without ?url=,
+	# so ExtractCID denies by design; auth is enforced at /api/* instead.
+	# Exact paths without trailing slash miss handle_path /* match;
+	# redirect to trailing slash so prefix strip then applies.
+	handle /discuss {
+		redir /discuss/ 308
+	}
+
+	handle /discuss/web {
+		redir /discuss/web/ 308
+	}
+
+	handle_path /discuss/web/* {
+		# same-origin iframe for remark42 embed; top-level pages stay DENY via global block.
+		header X-Frame-Options "SAMEORIGIN"
+		header Content-Security-Policy "frame-ancestors 'self'"
+		request_header -X-JWT
+		request_header -X-XSRF-TOKEN
+		request_header -Remote-User
+		request_header -X-Auth-Token
+		request_header -X-Auth-User
+		reverse_proxy remark42:8080
+	}
+
 	handle_path /discuss/* {
 		# same-origin iframe for remark42 embed; top-level pages stay DENY via global block.
 		header X-Frame-Options "SAMEORIGIN"
+		header Content-Security-Policy "frame-ancestors 'self'"
 		request_header -X-JWT
 		request_header -X-XSRF-TOKEN
 		request_header -Remote-User
@@ -62,6 +100,7 @@ stepik.study67.fyi {
 		forward_auth gate:8081 {
 			uri /auth/check
 			header_up X-Forwarded-Uri {uri}
+			# CADDY_GATE_TOKEN env required; empty fails closed (Guard false -> 404).
 			header_up X-Gate-Auth {env.CADDY_GATE_TOKEN}
 			copy_headers X-JWT X-XSRF-TOKEN
 		}
