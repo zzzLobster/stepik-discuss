@@ -178,3 +178,11 @@ Open:
 - Zero Trust tunnel cutover (§4) rolled back: Cloudflare Zero Trust Free plan requires a credit card, user has none → tunnel not usable. Direct orange-cloud (`CF edge → Caddy 80/443`) retained; no `tunnel` service, no `TUNNEL_TOKEN`.
 - §4 kept as alternative design if a card becomes available later (re-add `tunnel` service, `private_ranges`-only trust, `disable_redirects`, firewall `DROP 80/443` + DNS-01 note).
 - Current direct mitigations: `trusted_proxies static private_ranges + explicit CF ranges`, `auto_https` default (no `disable_redirects`), origin firewall CF-only (`ufw allow 22,80,443`; 80/443 preferably Cloudflare-only, no `DROP`-all).
+
+## 7. MSS 1380 resolution 2026-09-19 — CF AMS/LHR tails fixed
+
+- Before: 4x timeout 30s + 8s tails p95 30s; clamp-to-PMTU still 30% bad (ServerHello/cert frag PMTUD blackhole on AMS path).
+- After `--set-mss 1380`: 20/20 edge 200 zero timeouts, all AMS; ttfb median 0.309 p95 0.438 max 0.526, total median 0.312 p95 0.439; direct 0.136 median.
+- Verify: `iptables -t mangle -S POSTROUTING | grep -E 'TCPMSS.*1380'`
+- Measure: `for i in $(seq 1 20); do curl -sS -o /dev/null -w 'ttfb:%{time_starttransfer} total:%{time_total} code:%{http_code}\n' https://discuss.stepik.org/; done`
+- Apply: `deploy/network-tune.sh` (idempotent; removes legacy clamp rule).

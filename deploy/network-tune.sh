@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# MSS clamp + SYN-backlog tuning for direct Cloudflare origin.
+# MSS 1380 + SYN-backlog tuning for direct Cloudflare origin.
+# Proven 2026-09-19: --set-mss 1380 fixed CF AMS/LHR tails (20/20 edge 200
+# zero timeouts); --clamp-mss-to-pmtu insufficient (ServerHello/cert frag
+# PMTUD blackhole on AMS path).
 # Idempotent: safe to re-run, never flushes existing rules.
 # Linux-only actions are skipped gracefully on other OSes.
 set -euo pipefail
@@ -9,17 +12,24 @@ if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
   SUDO="sudo"
 fi
 
-echo "== iptables mangle: TCPMSS clamp-mss-to-pmtu =="
+echo "== iptables mangle: TCPMSS set-mss 1380 =="
 if ! command -v iptables >/dev/null 2>&1; then
   echo "skip: iptables not found (non-Linux host?)"
 else
+  # Remove legacy clamp rule if present to avoid duplicate MSS rules.
   # shellcheck disable=SC2086
   if $SUDO iptables -t mangle -C POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; then
-    echo "present: POSTROUTING TCPMSS clamp-mss-to-pmtu already applied"
+    # shellcheck disable=SC2086
+    $SUDO iptables -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    echo "removed: legacy POSTROUTING TCPMSS clamp-mss-to-pmtu"
+  fi
+  # shellcheck disable=SC2086
+  if $SUDO iptables -t mangle -C POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1380 2>/dev/null; then
+    echo "present: POSTROUTING TCPMSS set-mss 1380 already applied"
   else
     # shellcheck disable=SC2086
-    $SUDO iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-    echo "applied: POSTROUTING TCPMSS clamp-mss-to-pmtu"
+    $SUDO iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1380
+    echo "applied: POSTROUTING TCPMSS set-mss 1380"
   fi
   echo "-- current mangle POSTROUTING rules --"
   # shellcheck disable=SC2086
