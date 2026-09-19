@@ -1,9 +1,10 @@
 services:
   caddy:
     image: caddy:2.11.4-alpine
+    restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      - "${CADDY_BIND_IP:-0.0.0.0}:80:80"
+      - "${CADDY_BIND_IP:-0.0.0.0}:443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
@@ -30,6 +31,7 @@ services:
     build:
       context: ..
       dockerfile: gate/Dockerfile
+    restart: unless-stopped
     environment:
       STEPIK_CLIENT_ID: ${STEPIK_CLIENT_ID:-placeholder}
       STEPIK_CLIENT_SECRET: ${STEPIK_CLIENT_SECRET}
@@ -62,6 +64,7 @@ services:
   remark42:
     # Pinned 2026-09-17 via `docker buildx imagetools inspect ghcr.io/umputun/remark42:v1.16.4`. Never use :latest.
     image: ghcr.io/umputun/remark42:v1.16.4@sha256:980e0e76a6f241cd181f44c5b4d686f0d8cd7f552e11deb3bdcba223b2c3b866
+    restart: unless-stopped
     environment:
       SECRET: ${REMARK_JWT_SECRET}
       SITE: ${SITE:-stepik-discuss}
