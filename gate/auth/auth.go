@@ -338,9 +338,14 @@ func (c *Checker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		c.mint(w, r, sess, 0, false, start, cfRay)
 		return
 	}
-	cid, err := ExtractCID(fwdURI, r.Header.Get("Referer"))
+	referer := r.Header.Get("Referer")
+	cid, err := ExtractCID(fwdURI, referer)
 	if err != nil {
-		c.Log.Warn("check unknown thread", "uid", uid, "cf_ray", cfRay)
+		hasURL := false
+		if u, perr := url.Parse(fwdURI); perr == nil {
+			hasURL = u.Query().Get("url") != ""
+		}
+		c.Log.Warn("check unknown thread", "uid", uid, "cf_ray", cfRay, "fwd_path", forwardedPath(fwdURI), "has_url", hasURL, "has_referer", referer != "")
 		deny(http.StatusForbidden, codeForbidden, 0, "deny")
 		return
 	}

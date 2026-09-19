@@ -12,11 +12,13 @@ stepik.study67.fyi {
 	@noCF header !CF-Connecting-IP
 	request_header @noCF CF-Connecting-IP {http.request.remote.host}
 
+	# Referer needs full path same-origin for Gate cid fallback on /discuss/web/* without ?url=;
+	# cross-origin stays origin-only.
 	header {
 		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
-		Referrer-Policy "strict-origin"
+		Referrer-Policy "strict-origin-when-cross-origin"
 		X-Robots-Tag "noindex"
 		-Server
 	}
@@ -50,6 +52,8 @@ stepik.study67.fyi {
 	# sees root paths (spike-verified 2026-09-17: prefixed /user->404).
 	# X-Forwarded-Uri keeps ?query (cid comes from ?url=/Referer), path strip safe.
 	handle_path /discuss/* {
+		# same-origin iframe for remark42 embed; top-level pages stay DENY via global block.
+		header X-Frame-Options "SAMEORIGIN"
 		request_header -X-JWT
 		request_header -X-XSRF-TOKEN
 		request_header -Remote-User

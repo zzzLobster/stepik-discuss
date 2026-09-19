@@ -85,6 +85,8 @@ services:
       AUTH_CUSTOM_AUTH_URL: https://stepik.org/oauth2/authorize/
       AUTH_CUSTOM_TOKEN_URL: https://stepik.org/oauth2/token/
       AUTH_CUSTOM_INFO_URL: https://stepik.org/api/users/1182644732
+      # Internal docker network only (behind Caddy forward_auth + Gate JWT).
+      TRUSTED_PROXY: ${TRUSTED_PROXY:-172.16.0.0/12}
     volumes:
       - remark-data:/srv/var
     networks:
