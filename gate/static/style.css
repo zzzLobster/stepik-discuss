@@ -1,3 +1,4 @@
 body { font-family: system-ui, sans-serif; max-width: 44rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
 .button { display: inline-block; padding: 0.6rem 1.2rem; background: #1a73e8; color: #fff; text-decoration: none; border-radius: 0.4rem; }
+button.button { border: none; cursor: pointer; font: inherit; }
 .banner { background: #fff3cd; border: 1px solid #e0c36a; padding: 0.6rem; border-radius: 0.4rem; }

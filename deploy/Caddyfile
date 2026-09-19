@@ -10,6 +10,11 @@
 stepik.study67.fyi {
 	tls mjgavrilov@gmail.com
 
+	log {
+		output stdout
+		format json
+	}
+
 	# Edge (Cloudflare orange-cloud -> Caddy -> gate): preserve inbound
 	# CF-Connecting-IP from Cloudflare (real client); only set from edge
 	# socket when missing (direct origin / healthchecks).

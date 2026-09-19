@@ -103,6 +103,20 @@ func (s *Server) render(w http.ResponseWriter, status int, name string, data any
 	_ = s.tpl.ExecuteTemplate(w, name, data)
 }
 
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (sr *statusRecorder) WriteHeader(code int) {
+	sr.status = code
+	sr.ResponseWriter.WriteHeader(code)
+}
+
+func (sr *statusRecorder) Unwrap() http.ResponseWriter {
+	return sr.ResponseWriter
+}
+
 func (s *Server) renderError(w http.ResponseWriter, status int, message string) {
 	s.render(w, status, "error.html", map[string]string{"Message": message})
 }
@@ -137,6 +151,14 @@ type indexData struct {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	cfRay := r.Header.Get("CF-Ray")
+	sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	var uid int64
+	defer func() {
+		s.log.Info("index", "path", r.URL.Path, "status", sr.status, "latency_ms", time.Since(start).Milliseconds(), "cf_ray", cfRay, "uid", uid)
+	}()
+	w = sr
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
@@ -148,6 +170,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	data := indexData{Consent: RUConsent, LoginButton: RULoginButton}
 	sess, _, err := auth.LoadSession(s.store, r)
 	if err == nil {
+		uid = sess.StepikUserID
 		data.LoggedIn = true
 		data.FIO = sess.FIO
 		data.IsTeacher = sess.IsTeacher
@@ -181,6 +204,14 @@ type classData struct {
 }
 
 func (s *Server) handleClass(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	cfRay := r.Header.Get("CF-Ray")
+	sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	var uid, cid int64
+	defer func() {
+		s.log.Info("class", "path", r.URL.Path, "status", sr.status, "latency_ms", time.Since(start).Milliseconds(), "cf_ray", cfRay, "uid", uid, "cid", cid)
+	}()
+	w = sr
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -190,7 +221,7 @@ func (s *Server) handleClass(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	cid, _ := strconv.ParseInt(m[1], 10, 64)
+	cid, _ = strconv.ParseInt(m[1], 10, 64)
 	sess, sid, err := auth.LoadSession(s.store, r)
 	if err != nil {
 		if errors.Is(err, auth.ErrNoSession) {
@@ -200,6 +231,7 @@ func (s *Server) handleClass(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, http.StatusUnauthorized, RUExpired)
 		return
 	}
+	uid = sess.StepikUserID
 	stale, err := s.checker.EnsureFresh(r.Context(), sid, sess)
 	if err != nil {
 		if errors.Is(err, auth.ErrExpired) {

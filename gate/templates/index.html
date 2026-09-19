@@ -22,7 +22,7 @@
 {{else}}
 <p>Пока нет доступных классов.</p>
 {{end}}
-<form method="post" action="/auth/logout"><button type="submit">Выйти из аккаунта? Да, выйти</button></form>
+<form method="post" action="/auth/logout"><button type="submit" class="button">Выйти из аккаунта? Да, выйти</button></form>
 {{else}}
 <p>{{.Consent}}</p>
 <p><a class="button" href="/auth/login">{{.LoginButton}}</a></p>
