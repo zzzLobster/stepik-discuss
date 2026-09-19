@@ -85,7 +85,7 @@ stepik.study67.fyi {
 		redir /discuss/web/ 308
 	}
 
-	handle_path /discuss/web/* {
+	handle /discuss/web/* {
 		# same-origin iframe for remark42 embed; top-level pages stay DENY via global block.
 		header X-Frame-Options "SAMEORIGIN"
 		header Content-Security-Policy "frame-ancestors 'self'"
@@ -94,6 +94,7 @@ stepik.study67.fyi {
 		request_header -Remote-User
 		request_header -X-Auth-Token
 		request_header -X-Auth-User
+		uri strip_prefix /discuss
 		reverse_proxy remark42:8080
 	}
 
