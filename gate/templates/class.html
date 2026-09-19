@@ -18,7 +18,11 @@
 var remark_config = {
   host: "{{.EmbedHost}}",
   site_id: "{{.SiteID}}",
-  url: "{{.PageURL}}"
+  url: "{{.PageURL}}",
+  locale: 'ru',
+  no_footer: true,
+  show_rss_subscription: false,
+  components: ['embed', 'last-comments', 'counter']
 };
 </script>
 <script src="{{.EmbedHost}}/web/embed.js" defer></script>
