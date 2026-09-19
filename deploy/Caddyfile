@@ -119,10 +119,7 @@ stepik.study67.fyi {
 			header_up X-Gate-Auth {env.CADDY_GATE_TOKEN}
 			copy_headers X-JWT X-XSRF-TOKEN
 		}
-		reverse_proxy remark42:8080 {
-			header_up X-JWT {http.request.header.X-JWT}
-			header_up X-XSRF-TOKEN {http.request.header.X-XSRF-TOKEN}
-		}
+		reverse_proxy remark42:8080
 	}
 
 	handle {
