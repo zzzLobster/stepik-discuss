@@ -6,7 +6,8 @@ COPY gate ./gate
 RUN CGO_ENABLED=0 go build -o /gate ./gate
 
 FROM alpine:3.21
-RUN apk add --no-cache ca-certificates wget && adduser -S -u 10001 gate
+RUN apk add --no-cache ca-certificates wget && adduser -S -u 10001 gate && \
+    mkdir /data && chown 10001:nogroup /data && chmod 700 /data
 COPY --from=build /gate /gate
 EXPOSE 8081
 USER gate
