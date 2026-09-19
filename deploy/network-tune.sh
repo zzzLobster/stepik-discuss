@@ -12,6 +12,31 @@ if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
   SUDO="sudo"
 fi
 
+# Persist the runtime mangle rule across reboot. Prefers netfilter-persistent
+# when installed, falls back to a plain iptables-save snapshot. Idempotent.
+persist_netfilter() {
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "skip: not root, mangle rule will not persist across reboot (re-run as root to persist)"
+    return 0
+  fi
+  if command -v netfilter-persistent >/dev/null 2>&1; then
+    if netfilter-persistent save; then
+      echo "persisted: netfilter-persistent save"
+    else
+      echo "warn: netfilter-persistent save failed"
+    fi
+  elif command -v iptables-save >/dev/null 2>&1; then
+    mkdir -p /etc/iptables
+    if iptables-save > /etc/iptables/rules.v4; then
+      echo "persisted: iptables-save > /etc/iptables/rules.v4 (install iptables-persistent to auto-restore)"
+    else
+      echo "warn: iptables-save failed"
+    fi
+  else
+    echo "skip: neither netfilter-persistent nor iptables-save found"
+  fi
+}
+
 echo "== iptables mangle: TCPMSS set-mss 1380 =="
 if ! command -v iptables >/dev/null 2>&1; then
   echo "skip: iptables not found (non-Linux host?)"
@@ -34,6 +59,15 @@ else
   echo "-- current mangle POSTROUTING rules --"
   # shellcheck disable=SC2086
   $SUDO iptables -t mangle -S POSTROUTING 2>/dev/null || $SUDO iptables -t mangle -L POSTROUTING -n -v
+fi
+
+echo "== iptables persistence =="
+if [ "$(uname -s)" != "Linux" ]; then
+  echo "skip: iptables persistence is Linux-only"
+elif ! command -v iptables >/dev/null 2>&1; then
+  echo "skip: iptables not found, nothing to persist"
+else
+  persist_netfilter
 fi
 
 echo "== sysctl runtime =="

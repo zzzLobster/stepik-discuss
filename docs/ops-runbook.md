@@ -186,3 +186,10 @@ Open:
 - Verify: `iptables -t mangle -S POSTROUTING | grep -E 'TCPMSS.*1380'`
 - Measure: `for i in $(seq 1 20); do curl -sS -o /dev/null -w 'ttfb:%{time_starttransfer} total:%{time_total} code:%{http_code}\n' https://discuss.stepik.org/; done`
 - Apply: `deploy/network-tune.sh` (idempotent; removes legacy clamp rule).
+- Persist (root on Linux, runs automatically at the end of `network-tune.sh`):
+  `netfilter-persistent save` when `iptables-persistent` is installed
+  (else `iptables-save > /etc/iptables/rules.v4` snapshot). No systemd unit.
+- Persistence verification (after `reboot`):
+```bash
+iptables -t mangle -S POSTROUTING | grep 1380
+```
