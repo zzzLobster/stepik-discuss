@@ -109,6 +109,7 @@ func ExtractCID(forwardedURI, referer string) (int64, error) {
 	if raw == "" {
 		return 0, ErrUnknownThread
 	}
+	raw = unwrapIframeURL(raw)
 	if strings.Contains(strings.ToLower(raw), "%25") {
 		return 0, ErrUnknownThread
 	}
@@ -125,6 +126,25 @@ func ExtractCID(forwardedURI, referer string) (int64, error) {
 		return 0, ErrUnknownThread
 	}
 	return cid, nil
+}
+
+func unwrapIframeURL(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	isIframe := strings.HasPrefix(raw, config.DefaultRemarkURL+"/web/iframe.html")
+	if !isIframe && !strings.Contains(raw, "?url=") && !strings.Contains(raw, "&url=") {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	nested := u.Query().Get("url")
+	if nested == "" {
+		return raw
+	}
+	return nested
 }
 
 func Guard(r *http.Request, expected string) bool {
