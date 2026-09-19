@@ -1,12 +1,9 @@
-# Stock caddy:2 image has no `cloudflare` ip_source preset. Tunnel peer is
-# local docker bridge (not CF edge), so trust private_ranges only.
-# CF-Connecting-IP is re-injected by cloudflared and preserved below.
-# auto_https disable_redirects lets tunnel http://caddy:80 serve without a
-# 308 loop, while direct https:// still works via the site tls below.
+# Stock caddy:2 image has no `cloudflare` ip_source preset, so list
+# Cloudflare ranges explicitly (source https://www.cloudflare.com/ips;
+# refresh if CF changes). private_ranges covers docker peers/healthchecks.
 {
-	auto_https disable_redirects
 	servers {
-		trusted_proxies static private_ranges
+		trusted_proxies static private_ranges 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
 	}
 }
 
@@ -21,8 +18,11 @@ stepik.study67.fyi {
 	# Edge (Cloudflare orange-cloud -> Caddy -> gate): preserve inbound
 	# CF-Connecting-IP from Cloudflare (real client); only set from edge
 	# socket when missing (direct origin / healthchecks).
-	# trusted_proxies = private_ranges only (tunnel peer is local docker bridge, set in global block).
-	# Spoof: direct-to-origin can forge CF-Connecting-IP, so after tunnel healthy firewall DROP 80/443 (keep 22 only); see .env.example TUNNEL_TOKEN notes.
+	# trusted_proxies = Cloudflare ranges + docker private_ranges, set in
+	# the global block above (plan §5.3).
+	# Spoof tradeoff: direct-to-origin can forge CF-Connecting-IP (gate trusts
+	# docker-private peer), so lock origin firewall to Cloudflare ranges;
+	# ufw: allow 22,80,443 only (80/443 preferably Cloudflare-only).
 	request_header -X-Forwarded-For
 	@noCF header !CF-Connecting-IP
 	request_header @noCF CF-Connecting-IP {http.request.remote.host}
