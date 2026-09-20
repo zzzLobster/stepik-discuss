@@ -118,7 +118,7 @@ func (sr *statusRecorder) Unwrap() http.ResponseWriter {
 }
 
 func (s *Server) renderError(w http.ResponseWriter, status int, message string) {
-	s.render(w, status, "error.html", map[string]string{"Message": message})
+	s.render(w, status, "error.html", errorData{Message: message})
 }
 
 func validNext(raw string) (string, bool) {
@@ -129,7 +129,16 @@ func validNext(raw string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	if !nextPattern.MatchString(decoded) {
+	base := decoded
+	if strings.HasSuffix(decoded, reloginSuffix) {
+		base, _ = stripReloginSuffix(decoded)
+		if base == "" {
+			return "", false
+		}
+	} else if strings.ContainsAny(decoded, "?#&") {
+		return "", false
+	}
+	if !nextPattern.MatchString(base) {
 		return "", false
 	}
 	return decoded, true
@@ -146,6 +155,8 @@ type indexData struct {
 	Classes       []classCard
 	IsTeacher     bool
 	TeacherBanner string
+	LoginNext     string
+	StaleBanner   string
 	Consent       string
 	LoginButton   string
 }
@@ -155,8 +166,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	cfRay := r.Header.Get("CF-Ray")
 	sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 	var uid int64
+	outcome, reason := htmlOutcomeAnon, ""
+	var stale bool
+	reauth := hasReloginFlag(r)
 	defer func() {
-		s.log.Info("index", "path", r.URL.Path, "status", sr.status, "latency_ms", time.Since(start).Milliseconds(), "cf_ray", cfRay, "uid", uid)
+		s.log.Info("index", "route", "index", "path", r.URL.Path, "status", sr.status, "outcome", outcome, "reason", reason, "stale", stale, "reauth", reauth, "latency_ms", time.Since(start).Milliseconds(), "cf_ray", cfRay, "uid", uid)
 	}()
 	w = sr
 	if r.URL.Path != "/" {
@@ -168,22 +182,32 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := indexData{Consent: RUConsent, LoginButton: RULoginButton}
-	sess, _, err := auth.LoadSession(s.store, r)
-	if err == nil {
-		uid = sess.StepikUserID
-		data.LoggedIn = true
-		data.FIO = sess.FIO
-		data.IsTeacher = sess.IsTeacher
-		for _, cid := range sess.AllowedClassIDs {
-			title := sess.ClassTitles[strconv.FormatInt(cid, 10)]
-			if title == "" {
-				title = "Класс " + strconv.FormatInt(cid, 10)
-			}
-			data.Classes = append(data.Classes, classCard{CID: cid, Title: title})
+	sess, _, st, out, rsn, handled := s.resolveHTMLSession(w, r, 0, false)
+	outcome, reason, stale = out, rsn, st
+	if handled {
+		return
+	}
+	if sess == nil {
+		s.render(w, http.StatusOK, "index.html", data)
+		return
+	}
+	uid = sess.StepikUserID
+	data.LoggedIn = true
+	data.FIO = sess.FIO
+	data.IsTeacher = sess.IsTeacher
+	for _, cid := range sess.AllowedClassIDs {
+		title := sess.ClassTitles[strconv.FormatInt(cid, 10)]
+		if title == "" {
+			title = "Класс " + strconv.FormatInt(cid, 10)
 		}
-		if sess.IsTeacher && !s.teacherTokenValid() {
-			data.TeacherBanner = RUTeacherBanner
-		}
+		data.Classes = append(data.Classes, classCard{CID: cid, Title: title})
+	}
+	if sess.IsTeacher && !s.teacherTokenValid() {
+		data.TeacherBanner = RUTeacherBanner
+		data.LoginNext = loginURL(currentNext(r))
+	}
+	if stale {
+		data.StaleBanner = RUTransient
 	}
 	s.render(w, http.StatusOK, "index.html", data)
 }
@@ -208,8 +232,11 @@ func (s *Server) handleClass(w http.ResponseWriter, r *http.Request) {
 	cfRay := r.Header.Get("CF-Ray")
 	sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 	var uid, cid int64
+	outcome, reason := htmlOutcomeAnon, ""
+	var stale bool
+	reauth := hasReloginFlag(r)
 	defer func() {
-		s.log.Info("class", "path", r.URL.Path, "status", sr.status, "latency_ms", time.Since(start).Milliseconds(), "cf_ray", cfRay, "uid", uid, "cid", cid)
+		s.log.Info("class", "route", "class", "path", r.URL.Path, "status", sr.status, "outcome", outcome, "reason", reason, "stale", stale, "reauth", reauth, "latency_ms", time.Since(start).Milliseconds(), "cf_ray", cfRay, "uid", uid, "cid", cid)
 	}()
 	w = sr
 	if r.Method != http.MethodGet {
@@ -222,37 +249,15 @@ func (s *Server) handleClass(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cid, _ = strconv.ParseInt(m[1], 10, 64)
-	sess, sid, err := auth.LoadSession(s.store, r)
-	if err != nil {
-		if errors.Is(err, auth.ErrNoSession) {
-			http.Redirect(w, r, "/auth/login?next="+url.QueryEscape("/class/"+m[1]), http.StatusFound)
-			return
+	sess, _, st, out, rsn, handled := s.resolveHTMLSession(w, r, cid, true)
+	outcome, reason, stale = out, rsn, st
+	if handled {
+		if sess != nil {
+			uid = sess.StepikUserID
 		}
-		s.renderError(w, http.StatusUnauthorized, RUExpired)
 		return
 	}
 	uid = sess.StepikUserID
-	stale, err := s.checker.EnsureFresh(r.Context(), sid, sess)
-	if err != nil {
-		if errors.Is(err, auth.ErrExpired) {
-			s.renderError(w, http.StatusUnauthorized, RUExpired)
-			return
-		}
-		s.renderError(w, http.StatusServiceUnavailable, RUTransient)
-		return
-	}
-	_ = stale
-	if auth.SlideSession(s.store, sid, sess, time.Now()) {
-		sessions.SetSID(w, sid)
-	}
-	if !auth.Allowed(sess, cid) {
-		if len(sess.AllowedClassIDs) == 0 && !sess.IsTeacher {
-			s.renderError(w, http.StatusForbidden, RUOutsider)
-			return
-		}
-		s.renderError(w, http.StatusForbidden, RULeft)
-		return
-	}
 	title := sess.ClassTitles[strconv.FormatInt(cid, 10)]
 	if title == "" {
 		title = "Класс " + strconv.FormatInt(cid, 10)

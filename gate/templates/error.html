@@ -10,6 +10,7 @@
 <body>
 <main>
 <p>{{.Message}}</p>
+{{if .LoginNext}}<p><a class="button" href="{{.LoginNext}}">{{.LoginButton}}</a></p>{{end}}
 <p><a href="/">На главную</a></p>
 </main>
 </body>

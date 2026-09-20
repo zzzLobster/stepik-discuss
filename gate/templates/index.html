@@ -13,7 +13,8 @@
 <h1>Обсуждения классов</h1>
 {{if .LoggedIn}}
 <p>Вы вошли как {{.FIO}}.</p>
-{{if .TeacherBanner}}<p class="banner">{{.TeacherBanner}}</p>{{end}}
+{{if .TeacherBanner}}<p class="banner">{{.TeacherBanner}}{{if .LoginNext}} <a href="{{.LoginNext}}">{{.LoginButton}}</a>{{end}}</p>{{end}}
+{{if .StaleBanner}}<p class="banner">{{.StaleBanner}}</p>{{end}}
 {{if .Classes}}
 <h2>Ваши классы</h2>
 <ul>

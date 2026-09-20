@@ -385,10 +385,21 @@ func TestClass_expired401(t *testing.T) {
 	r.AddCookie(&http.Cookie{Name: sessions.CookieSID, Value: "sid-exp"})
 	w := httptest.NewRecorder()
 	s.Routes().ServeHTTP(w, r)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", w.Code)
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302 first-visit relogin redirect", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), RUExpired) {
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "relogin") {
+		t.Errorf("Location = %q, want ?relogin=1 flag", loc)
+	}
+	r2 := httptest.NewRequest("GET", "/class/82866?relogin=1", nil)
+	r2.AddCookie(&http.Cookie{Name: sessions.CookieSID, Value: "sid-exp"})
+	w2 := httptest.NewRecorder()
+	s.Routes().ServeHTTP(w2, r2)
+	if w2.Code != http.StatusUnauthorized {
+		t.Fatalf("second-visit status = %d, want 401", w2.Code)
+	}
+	if !strings.Contains(w2.Body.String(), RUExpired) {
 		t.Errorf("body missing expired RU string")
 	}
 }
