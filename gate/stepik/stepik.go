@@ -95,7 +95,7 @@ func AuthCodeURL(clientID, redirect, state string) string {
 	conf := &oauth2.Config{
 		ClientID:    clientID,
 		RedirectURL: redirect,
-		Scopes:      []string{"read", "write"},
+		Scopes:      []string{"read"},
 		Endpoint:    oauth2.Endpoint{AuthURL: AuthorizeURL, TokenURL: TokenURL},
 	}
 	return conf.AuthCodeURL(state)
@@ -113,7 +113,7 @@ func (c *Client) ExchangeCode(ctx context.Context, clientID, secret, redirect, c
 		ClientID:     clientID,
 		ClientSecret: secret,
 		RedirectURL:  redirect,
-		Scopes:       []string{"read", "write"},
+		Scopes:       []string{"read"},
 		Endpoint:     oauth2.Endpoint{AuthURL: AuthorizeURL, TokenURL: c.tokenURL()},
 	}
 	tok, err := conf.Exchange(ctx, code)
