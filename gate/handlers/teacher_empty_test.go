@@ -77,6 +77,9 @@ func TestTeacherEmptyFresh_genuineEmptyBackoffSingleAttempt(t *testing.T) {
 		calls++
 		return nil, nil
 	}
+	s.checker.GetLoggedIDFn = func(ctx context.Context, token string) (int64, error) {
+		return baseCfg().TeacherID, nil
+	}
 	w1 := doHTML(t, s, "GET", "/", "teach-empty")
 	if w1.Code != http.StatusOK {
 		t.Fatalf("first status = %d, want 200", w1.Code)
@@ -191,6 +194,9 @@ func TestTeacherEmptyFresh_ttlExpiredEmptySingleCall(t *testing.T) {
 	s.checker.ListOwnedFn = func(ctx context.Context, token string) ([]stepik.Class, error) {
 		calls++
 		return nil, nil
+	}
+	s.checker.GetLoggedIDFn = func(ctx context.Context, token string) (int64, error) {
+		return baseCfg().TeacherID, nil
 	}
 	w := doHTML(t, s, "GET", "/", "teach-ttl-empty")
 	if w.Code != http.StatusOK {

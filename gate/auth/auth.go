@@ -186,6 +186,10 @@ type Checker struct {
 	Log    *slog.Logger
 	// ListOwnedFn overrides Stepik.ListOwned when non-nil (tests only).
 	ListOwnedFn func(ctx context.Context, token string) ([]stepik.Class, error)
+	// GetLoggedIDFn overrides Stepik.GetLoggedID when non-nil (tests only).
+	GetLoggedIDFn func(ctx context.Context, token string) (int64, error)
+	// VerifyStudentFn overrides stepik.VerifyStudent when non-nil (tests only).
+	VerifyStudentFn func(ctx context.Context, userToken, teacherToken string, teacherValid bool, uid int64) ([]stepik.Class, string, error)
 }
 
 func (c *Checker) writeJSON(w http.ResponseWriter, status int, v any) {
@@ -251,6 +255,42 @@ func (c *Checker) staleOrFresh(ctx context.Context, sid string, sess *sessions.S
 	return false, &stepik.TransientError{Status: 0}
 }
 
+type probeOutcome int
+
+const (
+	probeAlive probeOutcome = iota
+	probeExpired
+	probeTransient
+)
+
+func (c *Checker) probeAlive(ctx context.Context, token string, uid int64) (probeOutcome, error) {
+	getLoggedID := c.Stepik.GetLoggedID
+	if c.GetLoggedIDFn != nil {
+		getLoggedID = c.GetLoggedIDFn
+	}
+	// Stepik degrades dead bearers to anonymous with 200 everywhere (anon uid observed 1390904444);
+	// equality with the session uid is the vitality signal, so any mismatch means a dead token.
+	probeUID, perr := getLoggedID(ctx, token)
+	if perr != nil {
+		if stepik.IsUnauthorized(perr) || errors.Is(perr, stepik.ErrEmptyStepics) {
+			return probeExpired, nil
+		}
+		return probeTransient, perr
+	}
+	if probeUID != uid {
+		return probeExpired, nil
+	}
+	return probeAlive, nil
+}
+
+func probeStatus(err error) int {
+	var te *stepik.TransientError
+	if errors.As(err, &te) {
+		return te.Status
+	}
+	return -1
+}
+
 func (c *Checker) refreshTeacher(ctx context.Context, sid string, sess *sessions.SessionRecord, now time.Time) (bool, error) {
 	plain, err := c.Store.DecryptToken(sess.TokenCiphertext, sess.TokenNonce)
 	if err != nil {
@@ -267,6 +307,16 @@ func (c *Checker) refreshTeacher(ctx context.Context, sid string, sess *sessions
 		}
 		c.Log.Warn("teacher recheck transient", "uid", sess.StepikUserID)
 		return c.staleOrFresh(ctx, sid, sess, now)
+	}
+	if len(classes) == 0 {
+		switch outcome, perr := c.probeAlive(ctx, plain, sess.StepikUserID); outcome {
+		case probeExpired:
+			c.Log.Info("teacher token dead on empty probe", "uid", sess.StepikUserID, "matched", false)
+			return false, ErrExpired
+		case probeTransient:
+			c.Log.Warn("teacher recheck transient", "uid", sess.StepikUserID, "status", probeStatus(perr))
+			return c.staleOrFresh(ctx, sid, sess, now)
+		}
 	}
 	ct, nonce, err := c.Store.EncryptToken(plain)
 	if err != nil {
@@ -300,13 +350,30 @@ func (c *Checker) refreshStudent(ctx context.Context, sid string, sess *sessions
 		return false, ErrExpired
 	}
 	teacherPlain, teacherValid := c.teacherTokenValid()
-	classes, path, verr := stepik.VerifyStudent(ctx, c.Stepik, plain, teacherPlain, teacherValid, sess.StepikUserID)
+	var classes []stepik.Class
+	var path string
+	var verr error
+	if c.VerifyStudentFn != nil {
+		classes, path, verr = c.VerifyStudentFn(ctx, plain, teacherPlain, teacherValid, sess.StepikUserID)
+	} else {
+		classes, path, verr = stepik.VerifyStudent(ctx, c.Stepik, plain, teacherPlain, teacherValid, sess.StepikUserID)
+	}
 	if verr != nil {
 		if stepik.IsUnauthorized(verr) {
 			return false, ErrExpired
 		}
 		c.Log.Warn("student recheck transient", "uid", sess.StepikUserID, "auth_path", path)
 		return c.staleOrFresh(ctx, sid, sess, now)
+	}
+	if len(classes) == 0 {
+		switch outcome, perr := c.probeAlive(ctx, plain, sess.StepikUserID); outcome {
+		case probeExpired:
+			c.Log.Info("student token dead on empty probe", "uid", sess.StepikUserID, "matched", false)
+			return false, ErrExpired
+		case probeTransient:
+			c.Log.Warn("student recheck transient", "uid", sess.StepikUserID, "auth_path", path, "status", probeStatus(perr))
+			return c.staleOrFresh(ctx, sid, sess, now)
+		}
 	}
 	sess.AllowedClassIDs = idsOf(classes)
 	sess.ClassTitles = titlesOf(classes)

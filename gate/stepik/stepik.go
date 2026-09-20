@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -52,8 +53,8 @@ func (e *TransientError) Error() string {
 }
 
 func IsTransient(err error) bool {
-	_, ok := err.(*TransientError)
-	return ok
+	var te *TransientError
+	return errors.As(err, &te)
 }
 
 type UnauthorizedError struct {
@@ -65,9 +66,11 @@ func (e *UnauthorizedError) Error() string {
 }
 
 func IsUnauthorized(err error) bool {
-	_, ok := err.(*UnauthorizedError)
-	return ok
+	var ue *UnauthorizedError
+	return errors.As(err, &ue)
 }
+
+var ErrEmptyStepics = errors.New("stepics empty")
 
 type Client struct {
 	http      *http.Client
@@ -207,7 +210,7 @@ func (c *Client) GetLoggedID(ctx context.Context, token string) (int64, error) {
 		return 0, err
 	}
 	if len(v.Stepics) == 0 {
-		return 0, fmt.Errorf("stepics empty")
+		return 0, ErrEmptyStepics
 	}
 	return v.Stepics[0].User, nil
 }
