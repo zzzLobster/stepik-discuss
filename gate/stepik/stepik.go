@@ -110,6 +110,7 @@ func (c *Client) ExchangeCode(ctx context.Context, clientID, secret, redirect, c
 	if err != nil {
 		return "", time.Time{}, err
 	}
+	c.log.Info("tok: %v", tok)
 	expires := tok.Expiry
 	if expires.IsZero() {
 		expires = time.Now().Add(36000*time.Second - 300*time.Second)
