@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/zzzLobster/stepik-discuss/gate/admin"
@@ -23,6 +24,32 @@ var tplFS embed.FS
 
 //go:embed static/*
 var contentFS embed.FS
+
+func buildRevision() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	var rev, modified string
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			modified = s.Value
+		}
+	}
+	if rev == "" {
+		return "unknown"
+	}
+	if len(rev) > 12 {
+		rev = rev[:12]
+	}
+	if modified == "true" {
+		rev += "-dirty"
+	}
+	return rev
+}
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -66,7 +93,7 @@ func main() {
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	log.Info("gate listening", "addr", ":8081", "placeholder", cfg.Placeholder)
+	log.Info("gate listening", "addr", ":8081", "placeholder", cfg.Placeholder, "revision", buildRevision())
 	if err := httpSrv.ListenAndServe(); err != nil {
 		log.Error("gate stopped", "err", err)
 		os.Exit(1)

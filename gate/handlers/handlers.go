@@ -169,8 +169,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	outcome, reason := htmlOutcomeAnon, ""
 	var stale bool
 	reauth := hasReloginFlag(r)
+	var classCount int
 	defer func() {
-		s.log.Info("index", "route", "index", "path", r.URL.Path, "status", sr.status, "outcome", outcome, "reason", reason, "stale", stale, "reauth", reauth, "latency_ms", time.Since(start).Milliseconds(), "cf_ray", cfRay, "uid", uid)
+		s.log.Info("index", "route", "index", "path", r.URL.Path, "status", sr.status, "outcome", outcome, "reason", reason, "stale", stale, "reauth", reauth, "latency_ms", time.Since(start).Milliseconds(), "cf_ray", cfRay, "uid", uid, "class_count", classCount)
 	}()
 	w = sr
 	if r.URL.Path != "/" {
@@ -184,6 +185,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	data := indexData{Consent: RUConsent, LoginButton: RULoginButton}
 	sess, _, st, out, rsn, handled := s.resolveHTMLSession(w, r, 0, false)
 	outcome, reason, stale = out, rsn, st
+	if sess != nil {
+		classCount = len(sess.AllowedClassIDs)
+	}
 	if handled {
 		return
 	}
@@ -235,8 +239,9 @@ func (s *Server) handleClass(w http.ResponseWriter, r *http.Request) {
 	outcome, reason := htmlOutcomeAnon, ""
 	var stale bool
 	reauth := hasReloginFlag(r)
+	var classCount int
 	defer func() {
-		s.log.Info("class", "route", "class", "path", r.URL.Path, "status", sr.status, "outcome", outcome, "reason", reason, "stale", stale, "reauth", reauth, "latency_ms", time.Since(start).Milliseconds(), "cf_ray", cfRay, "uid", uid, "cid", cid)
+		s.log.Info("class", "route", "class", "path", r.URL.Path, "status", sr.status, "outcome", outcome, "reason", reason, "stale", stale, "reauth", reauth, "latency_ms", time.Since(start).Milliseconds(), "cf_ray", cfRay, "uid", uid, "cid", cid, "class_count", classCount)
 	}()
 	w = sr
 	if r.Method != http.MethodGet {
@@ -251,6 +256,9 @@ func (s *Server) handleClass(w http.ResponseWriter, r *http.Request) {
 	cid, _ = strconv.ParseInt(m[1], 10, 64)
 	sess, _, st, out, rsn, handled := s.resolveHTMLSession(w, r, cid, true)
 	outcome, reason, stale = out, rsn, st
+	if sess != nil {
+		classCount = len(sess.AllowedClassIDs)
+	}
 	if handled {
 		if sess != nil {
 			uid = sess.StepikUserID

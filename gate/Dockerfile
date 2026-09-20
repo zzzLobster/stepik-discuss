@@ -1,8 +1,10 @@
 FROM golang:1.27.1-alpine AS build
 WORKDIR /src
+RUN apk add --no-cache git
 COPY go.mod go.sum ./
 RUN go mod download
 COPY gate ./gate
+COPY .git ./.git
 RUN CGO_ENABLED=0 go build -o /gate ./gate
 
 FROM alpine:3.21

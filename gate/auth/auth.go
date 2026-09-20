@@ -184,6 +184,8 @@ type Checker struct {
 	Stepik *stepik.Client
 	Limits *ratelimit.Store
 	Log    *slog.Logger
+	// ListOwnedFn overrides Stepik.ListOwned when non-nil (tests only).
+	ListOwnedFn func(ctx context.Context, token string) ([]stepik.Class, error)
 }
 
 func (c *Checker) writeJSON(w http.ResponseWriter, status int, v any) {
@@ -220,6 +222,22 @@ func (c *Checker) EnsureFresh(ctx context.Context, sid string, sess *sessions.Se
 	return c.refreshStudent(ctx, sid, sess, now)
 }
 
+// ForceTeacherEmptyRefresh forces one live re-verify for a fresh teacher
+// session whose snapshot is empty. Bounded by NextRetryAt: at most one
+// attempt per RetryAfter window. Same (stale, err) taxonomy as EnsureFresh;
+// on genuinely-empty success it arms NextRetryAt so rapid HTML hits do not
+// hammer Stepik. HTML helper path only; never used by /auth/check.
+func (c *Checker) ForceTeacherEmptyRefresh(ctx context.Context, sid string, sess *sessions.SessionRecord) (bool, error) {
+	now := time.Now()
+	if !sess.NextRetryAt.IsZero() && now.Before(sess.NextRetryAt) {
+		if now.Sub(sess.LastVerifiedAt) <= c.Cfg.MaxStale {
+			return true, nil
+		}
+		return false, nil
+	}
+	return c.refreshTeacher(ctx, sid, sess, now)
+}
+
 func (c *Checker) staleOrFresh(ctx context.Context, sid string, sess *sessions.SessionRecord, now time.Time) (bool, error) {
 	_ = ctx
 	if now.Sub(sess.LastVerifiedAt) <= c.Cfg.MaxStale {
@@ -238,7 +256,11 @@ func (c *Checker) refreshTeacher(ctx context.Context, sid string, sess *sessions
 	if err != nil {
 		return false, ErrExpired
 	}
-	classes, err := c.Stepik.ListOwned(ctx, plain)
+	listOwned := c.Stepik.ListOwned
+	if c.ListOwnedFn != nil {
+		listOwned = c.ListOwnedFn
+	}
+	classes, err := listOwned(ctx, plain)
 	if err != nil {
 		if stepik.IsUnauthorized(err) {
 			return false, ErrExpired
@@ -262,6 +284,9 @@ func (c *Checker) refreshTeacher(ctx context.Context, sid string, sess *sessions
 	sess.ClassTitles = titlesOf(classes)
 	sess.LastVerifiedAt = now
 	sess.NextRetryAt = time.Time{}
+	if len(sess.AllowedClassIDs) == 0 {
+		sess.NextRetryAt = now.Add(c.Cfg.RetryAfter + retryJitter(sid))
+	}
 	sess.LastSeenAt = now
 	if err := c.Store.PutSession(sid, sess); err != nil {
 		return false, err

@@ -116,6 +116,22 @@ func (s *Server) resolveHTMLSession(w http.ResponseWriter, r *http.Request, cid 
 		s.renderHTMLTransient(w)
 		return nil, "", false, htmlOutcomeTransient, "transient", true
 	}
+	if !stale && sess.IsTeacher && len(sess.AllowedClassIDs) == 0 {
+		fstale, ferr := s.checker.ForceTeacherEmptyRefresh(r.Context(), sid, sess)
+		if ferr != nil {
+			if errors.Is(ferr, auth.ErrExpired) {
+				if hasReloginFlag(r) {
+					s.renderExpiredFinal(w, r)
+					return nil, "", false, htmlOutcomeExpiredFinal, "expired", true
+				}
+				s.redirectToLogin(w, r, currentNext(r), true)
+				return nil, "", false, htmlOutcomeRedirect, "expired", true
+			}
+			s.renderHTMLTransient(w)
+			return nil, "", false, htmlOutcomeTransient, "transient", true
+		}
+		stale = fstale
+	}
 	if auth.SlideSession(s.store, sid, sess, time.Now()) {
 		sessions.SetSID(w, sid)
 	}
