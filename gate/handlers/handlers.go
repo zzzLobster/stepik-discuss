@@ -398,13 +398,13 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	token, tokenExpires, err := s.step.ExchangeCode(ctx, s.cfg.StepikClientID, s.cfg.StepikClientSecret, s.cfg.StepikRedirectURL, code)
+	access, refresh, tokenExpires, err := s.step.ExchangeCode(ctx, s.cfg.StepikClientID, s.cfg.StepikClientSecret, s.cfg.StepikRedirectURL, code)
 	if err != nil {
 		s.log.Warn("oauth exchange failed", "latency_ms", time.Since(start).Milliseconds(), "cf_ray", cfRay)
 		s.renderError(w, http.StatusServiceUnavailable, RUTransient)
 		return
 	}
-	uid, err := s.step.GetLoggedID(ctx, token)
+	uid, err := s.step.GetLoggedID(ctx, access)
 	if err != nil {
 		if stepik.IsTransient(err) {
 			s.renderError(w, http.StatusServiceUnavailable, RUTransient)
@@ -413,7 +413,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, http.StatusForbidden, RUOAuthDeny)
 		return
 	}
-	fio, avatar, err := s.step.GetProfile(ctx, token, uid)
+	fio, avatar, err := s.step.GetProfile(ctx, access, uid)
 	if err != nil {
 		if stepik.IsTransient(err) {
 			s.renderError(w, http.StatusServiceUnavailable, RUTransient)
@@ -422,10 +422,22 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		fio = "Stepik " + strconv.FormatInt(uid, 10)
 	}
 	now := time.Now()
-	ct, nonce, err := s.store.EncryptToken(token)
+	ct, nonce, err := s.store.EncryptToken(access)
 	if err != nil {
 		s.renderError(w, http.StatusInternalServerError, RUTransient)
 		return
+	}
+	// Re-login writes access+refresh unconditionally; a concurrent renewal
+	// loses via ObtainedAt fencing because this record is strictly newer.
+	var refreshCT, refreshNonce []byte
+	var refreshObtained time.Time
+	if refresh != "" {
+		refreshCT, refreshNonce, err = s.store.EncryptToken(refresh)
+		if err != nil {
+			s.renderError(w, http.StatusInternalServerError, RUTransient)
+			return
+		}
+		refreshObtained = now
 	}
 	uv, err := s.store.GetUserVersion(uid)
 	if err != nil {
@@ -438,31 +450,37 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sess := &sessions.SessionRecord{
-		StepikUserID:    uid,
-		FIO:             fio,
-		AvatarURL:       avatar,
-		CreatedAt:       now,
-		LastVerifiedAt:  now,
-		ExpiresAt:       now.Add(30 * 24 * time.Hour),
-		LastSeenAt:      now,
-		UserVersion:     uv,
-		GlobalEpoch:     epoch,
-		TokenCiphertext: ct,
-		TokenNonce:      nonce,
-		TokenObtainedAt: now,
-		TokenExpiresAt:  tokenExpires,
+		StepikUserID:      uid,
+		FIO:               fio,
+		AvatarURL:         avatar,
+		CreatedAt:         now,
+		LastVerifiedAt:    now,
+		ExpiresAt:         now.Add(30 * 24 * time.Hour),
+		LastSeenAt:        now,
+		UserVersion:       uv,
+		GlobalEpoch:       epoch,
+		TokenCiphertext:   ct,
+		TokenNonce:        nonce,
+		TokenObtainedAt:   now,
+		TokenExpiresAt:    tokenExpires,
+		RefreshCiphertext: refreshCT,
+		RefreshNonce:      refreshNonce,
+		RefreshObtainedAt: refreshObtained,
 	}
 	var authPath string
 	if uid == s.cfg.TeacherID {
 		sess.IsTeacher = true
-		_ = s.store.PutTeacherToken(&sessions.TeacherToken{
-			Ciphertext: ct,
-			Nonce:      nonce,
-			ObtainedAt: now,
-			ExpiresAt:  tokenExpires,
-			OwnerUID:   s.cfg.TeacherID,
+		s.checker.SeedTeacherToken(&sessions.TeacherToken{
+			Ciphertext:        ct,
+			Nonce:             nonce,
+			ObtainedAt:        now,
+			ExpiresAt:         tokenExpires,
+			OwnerUID:          s.cfg.TeacherID,
+			RefreshCiphertext: refreshCT,
+			RefreshNonce:      refreshNonce,
+			RefreshObtainedAt: refreshObtained,
 		})
-		classes, lerr := s.step.ListOwned(ctx, token)
+		classes, lerr := s.step.ListOwned(ctx, access)
 		if lerr != nil {
 			if stepik.IsTransient(lerr) {
 				s.renderError(w, http.StatusServiceUnavailable, RUTransient)
@@ -476,7 +494,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		sess.ClassTitles = titlesOf(classes)
 	} else {
 		teacherPlain, teacherValid := s.currentTeacherToken()
-		classes, path, verr := stepik.VerifyStudent(ctx, s.step, token, teacherPlain, teacherValid, uid)
+		classes, path, verr := stepik.VerifyStudent(ctx, s.step, access, teacherPlain, teacherValid, uid)
 		authPath = path
 		if verr != nil {
 			if stepik.IsTransient(verr) {

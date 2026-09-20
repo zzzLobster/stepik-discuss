@@ -180,7 +180,9 @@ subnet guard; Gate returns `404` on bad `X-Gate-Auth`. Caddy strips inbound
 
 ### 5.1 Teacher-token bootstrap + Hybrid C (DECIDED — normative order)
 
-Stepik access tokens live ~10h, no documented refresh token. No
+Stepik access tokens live ~10h, no documented refresh token. *(SUPERSEDED
+2026-09-20 — falsified live, see addendum at end of §5.1; original text kept
+for history.)* No
 `STEPIK_TEACHER_TOKEN` in `.env`. Auto-capture on every teacher login
 (`uid == 1182644732`): overwrite `teacher_token/current`
 `{ciphertext,nonce,obtained_at,expires_at,expires_in,
@@ -212,6 +214,22 @@ auth_path=B|B+detail|A-fallback|A-expired|transient|deny)`. Pure user-token
 (B) is primary (zero secret rotation); teacher token is fallback only.
 Detail `403`-anon readability confirmed path: member readability verified
 in browser wave (see §8 item 7 — which auth path fired).
+
+**Refresh-token renewal (2026-09-20 addendum).** The "no documented refresh
+token" assumption above was falsified live: the token endpoint DOES return
+`refresh_token`, so Gate now captures it on `ExchangeCode` and stores it
+encrypted (AES-256-GCM, `GATE_TOKEN_KEY`) alongside the access token in both
+the session record and `teacher_token/current`; on `401`/probe-mismatch
+(`probeAlive`: 401/empty-stepics/uid-mismatch) Gate silently redeems the
+stored refresh (`RedeemRefresh`, rotation-aware — empty `refreshOut` retains
+the previous refresh) under a per-key single-flight lock (`sid:<sid>` /
+`teacher:current`, teacher demand+background serialized on one mutex with
+`ObtainedAt` fencing so a concurrent winner is reused, never double-redeemed),
+plus a background teacher loop that renews when expiring within 1h or the
+probe reports dead; taxonomy is `invalid_grant` (400/401) → clear refresh →
+`ErrExpired` → re-login, vs transient (429/5xx/transport) → serve stale in grace;
+yes, teacher token is checked once 5-15s after (re)start and renewed if expiring/dead, then every 15m — students always renew lazily on demand.
+Details + event names + pager: `docs/ops-runbook.md` §9.
 
 ### 5.2 Consent notice (APPROVED 2026-09-17)
 
@@ -570,6 +588,7 @@ OAuth-deny `"Вход через Stepik отменён или не удался.
 - `read write` scope: Stepik offers no finer scope; decided **no explainer note**
   on login page (consent + button only). Risk accepted: a student may ask why
   "read write" — answer: we only read class list + profile.
+  Settled 2026-09-20: write scope is requested but never used — Stepik issues read+write as an indivisible bundle, Gate performs zero write calls, refresh omits scope so it is preserved; the §10 no-explainer decision stands.
 
 ## 11. P0 resolved (2026-09-17 refinement — normative) + remaining non-blockers
 

@@ -54,6 +54,12 @@ type SessionRecord struct {
 	TokenNonce      []byte            `json:"token_nonce"`
 	TokenObtainedAt time.Time         `json:"token_obtained_at"`
 	TokenExpiresAt  time.Time         `json:"token_expires_at"`
+	// Refresh fields are additive: pre-feature rows unmarshal with nil/zero
+	// values and follow the legacy no-renewal path. Same AES-GCM key as the
+	// access token, separate nonces. No refresh-expiry field is stored.
+	RefreshCiphertext []byte    `json:"refresh_ciphertext,omitempty"`
+	RefreshNonce      []byte    `json:"refresh_nonce,omitempty"`
+	RefreshObtainedAt time.Time `json:"refresh_obtained_at,omitempty"`
 }
 
 type TeacherToken struct {
@@ -63,6 +69,10 @@ type TeacherToken struct {
 	ExpiresAt  time.Time `json:"expires_at"`
 	ExpiresIn  int       `json:"expires_in"`
 	OwnerUID   int64     `json:"owner_uid"`
+	// Same additive refresh storage as SessionRecord (see above).
+	RefreshCiphertext []byte    `json:"refresh_ciphertext,omitempty"`
+	RefreshNonce      []byte    `json:"refresh_nonce,omitempty"`
+	RefreshObtainedAt time.Time `json:"refresh_obtained_at,omitempty"`
 }
 
 type Store struct {
@@ -374,6 +384,32 @@ func (s *Store) PutTeacherToken(tok *TeacherToken) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(BucketTeacherToken).Put(KeyTeacherCurrent, raw)
 	})
+}
+
+// HasTeacherSessionFresherThan reports whether any teacher session holds
+// tokens obtained after since. The background teacher loop uses it to avoid
+// parking on a stale shared record after a demand dual-write failure left a
+// fresher rotated chain in a session (see auth.teacherBackgroundRenew).
+func (s *Store) HasTeacherSessionFresherThan(since time.Time) (bool, error) {
+	found := false
+	err := s.db.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket(BucketSessions).Cursor()
+		for k, raw := c.First(); k != nil; k, raw = c.Next() {
+			var r SessionRecord
+			if err := json.Unmarshal(raw, &r); err != nil {
+				continue
+			}
+			if !r.IsTeacher {
+				continue
+			}
+			if r.TokenObtainedAt.After(since) {
+				found = true
+				return nil
+			}
+		}
+		return nil
+	})
+	return found, err
 }
 
 func (s *Store) StripClass(uid, cid int64) (int, error) {

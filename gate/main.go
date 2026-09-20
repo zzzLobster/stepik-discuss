@@ -72,6 +72,7 @@ func main() {
 	limits := ratelimit.NewStore()
 	checker := &auth.Checker{Cfg: cfg, Store: store, Stepik: step, Limits: limits, Log: log}
 	adm := &admin.Admin{Store: store, Origin: cfg.Origin, Log: log}
+	checker.StartTeacherRefresh(stop)
 
 	tpl, err := template.ParseFS(tplFS, "templates/*.html")
 	if err != nil {

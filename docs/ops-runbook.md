@@ -260,3 +260,76 @@ docker compose logs remark42 2>&1 | grep -iE '401|jwt|app-name|auth' | tail -20
 | `check allow` + remark `401 app-name: remark42` | `direct:200` untested | Downstream of Gate: secret/claims/Caddy copy — run §8.3 steps 1–5 |
 | `direct:200` + edge `401` | Caddy copy/strip | `forward_auth copy_headers` or `request_header -X-JWT` regression — run step 3 |
 | `direct:401` | secret/claims/clock | `SECRET` mismatch, `aud/iss/exp` drift, or `SITE`/`REMARK_URL` mismatch — run steps 1–2 |
+
+## 9. Refresh-token ops (hybrid renewal, 2026-09-20)
+
+Capture: `ExchangeCode` (`Scopes: read+write`) stores access + refresh
+encrypted (AES-256-GCM) in the session row and, for the teacher, in
+`teacher_token/current`. Renew: silent `RedeemRefresh` on `401` or
+probe-mismatch (`teacher_401`/`teacher_probe`/`student_401`/`student_probe`
+reasons), rotation-aware (empty `refreshOut` keeps the old refresh),
+single-flight per `sid:<sid>` / `teacher:current` with `ObtainedAt` fencing
+(loser reuses the winner, never double-redeems).
+
+### 9.1 Event names
+
+- Demand (per-request, `gate/auth/auth.go:tryRenew*`): `teacher_renew_demand_start`,
+  `teacher_renew_demand_success` (`rotated=true/false`), `teacher_renew_demand_invalid_grant`,
+  `teacher_renew_demand_transient`, `teacher_renew_demand_superseded`.
+  Background record renews add `"scope":"teacher_record"`; `reason` is
+  `teacher_401`/`teacher_probe`/`student_401`/`student_probe` on demand,
+  `background_expiry`/`background_probe` in the loop.
+- Background loop (`gate/auth/teacher_refresh.go`): `teacher_background_alive`,
+  `teacher_background_renew_ok` (`reason=background_expiry|background_probe`),
+  `teacher_background_transient`, `teacher_background_transient_skip`,
+  `teacher_background_no_record`, `teacher_background_parked`
+  (`reason=no_record|still_dead|invalid_grant|no_refresh`).
+
+### 9.2 Pager: invalid_grant rate
+
+- `teacher_renew_demand_invalid_grant` at `info` = one dead refresh chain
+  (user revoked at Stepik / rotation loser) → re-login, not a page.
+- Page when the rate spikes across many uids or the teacher record parks with
+  `reason=invalid_grant` (shared fallback dead): check
+  `teacher_background_parked` + teacher banner on `/`, ask the teacher to
+  re-login via Stepik (re-seeds both records unconditionally).
+- `teacher_renew_demand_transient` / `teacher_background_transient` at `warn`
+  = Stepik 429/5xx/transport → stale-in-grace, no action unless sustained.
+
+### 9.3 Parked / unparked + 6h escape
+
+- Background parks (no Stepik calls while parked) on: missing record,
+  `invalid_grant`, or still-dead-after-renew. Single `warn` on first park,
+  quiet after.
+- Unpark: any successful renew/probe (`markAlive`), or the 6h escape hatch —
+  a parked loop older than 6h retries on the next tick instead of returning
+  `parked`, so a false park (e.g. stale-record race healed by a demand
+  dual-write) self-heals without a restart.
+
+### 9.4 Restart behavior
+
+- yes, teacher token is checked once 5-15s after (re)start and renewed if expiring/dead, then every 15m — students always renew lazily on demand.
+- Concretely: `StartTeacherRefresh` fires one jittered (5–15s) immediate check
+  on boot, then a `15m±3m` ticker. Expiring-within-1h renews without probing;
+  otherwise one `GetLoggedID` probe decides (uid mismatch / empty stepics /
+  401 → renew; transient → back off up to two ticks; alive → no-op).
+- Students never tick: renewal happens only inside `EnsureFresh` on the 6h
+  lazy re-check path (401/probe-mismatch → redeem → retry verify once).
+
+### 9.5 Presence: has_refresh
+
+- Both `oauth exchange ok` and `stepik refresh ok` log `has_refresh=<bool>`.
+- `has_refresh=false` on exchange = pre-feature Stepik response without a
+  refresh (row keeps working, legacy path: expiry → re-login). Absence of a
+  stored refresh (`renewNone`) is normal for old rows, not an error.
+
+### 9.6 Scope note (plan §10 decision stands)
+
+- write scope is requested but never used — Stepik issues read+write as an indivisible bundle, Gate performs zero write calls, refresh omits scope so it is preserved.
+- Login sends `Scopes: read+write` because Stepik offers no finer scope; Gate
+  only ever reads (`GetLoggedID`, `GetProfile`, `ListOwned`,
+  `VerifyStudent`). `RedeemRefresh` posts only
+  `grant_type=refresh_token&refresh_token=…` (no `scope` param), so the
+  granted bundle is preserved as-is. No explainer on the login page per plan
+  §10 (consent + button only); if a student asks why "read write", answer: we
+  only read class list + profile.

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -77,6 +78,8 @@ type Client struct {
 	out       *rate.Limiter
 	teacherID int64
 	log       *slog.Logger
+	// TokenURL overrides the default token endpoint (tests only).
+	TokenURL string
 }
 
 func New(teacherID int64, log *slog.Logger) *Client {
@@ -98,24 +101,110 @@ func AuthCodeURL(clientID, redirect, state string) string {
 	return conf.AuthCodeURL(state)
 }
 
-func (c *Client) ExchangeCode(ctx context.Context, clientID, secret, redirect, code string) (string, time.Time, error) {
+func (c *Client) tokenURL() string {
+	if c.TokenURL != "" {
+		return c.TokenURL
+	}
+	return TokenURL
+}
+
+func (c *Client) ExchangeCode(ctx context.Context, clientID, secret, redirect, code string) (access, refresh string, expires time.Time, err error) {
 	conf := &oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: secret,
 		RedirectURL:  redirect,
 		Scopes:       []string{"read", "write"},
-		Endpoint:     oauth2.Endpoint{AuthURL: AuthorizeURL, TokenURL: TokenURL},
+		Endpoint:     oauth2.Endpoint{AuthURL: AuthorizeURL, TokenURL: c.tokenURL()},
 	}
 	tok, err := conf.Exchange(ctx, code)
 	if err != nil {
-		return "", time.Time{}, err
+		return "", "", time.Time{}, err
 	}
-	c.log.Info("tok: %v", tok)
-	expires := tok.Expiry
+	expires = tok.Expiry
 	if expires.IsZero() {
 		expires = time.Now().Add(36000*time.Second - 300*time.Second)
 	}
-	return tok.AccessToken, expires, nil
+	refresh = tok.RefreshToken
+	c.log.Info("oauth exchange ok", "has_refresh", refresh != "")
+	return tok.AccessToken, refresh, expires, nil
+}
+
+// RedeemRefresh exchanges a stored refresh token for a fresh access token.
+// refreshOut is empty when the endpoint omits rotation: the caller must
+// retain the previous refresh token. A 400 (invalid_grant or bare) or 401
+// means the refresh token is dead and is reported as UnauthorizedError with
+// no retry; 429/5xx/transport map to TransientError with retry; other 4xx
+// yield a plain non-retryable error.
+func (c *Client) RedeemRefresh(ctx context.Context, clientID, secret, refresh string) (access, refreshOut string, expires time.Time, err error) {
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refresh)
+	encoded := form.Encode()
+	var last error
+	for attempt := 0; attempt < 4; attempt++ {
+		if attempt > 0 {
+			wait := time.Duration(500*(1<<uint(attempt-1)))*time.Millisecond + time.Duration(rand.Intn(250))*time.Millisecond
+			select {
+			case <-ctx.Done():
+				return "", "", time.Time{}, ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+		if err := c.out.Wait(ctx); err != nil {
+			return "", "", time.Time{}, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenURL(), strings.NewReader(encoded))
+		if err != nil {
+			return "", "", time.Time{}, err
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.SetBasicAuth(clientID, secret)
+		start := time.Now()
+		resp, err := c.http.Do(req)
+		latency := time.Since(start).Milliseconds()
+		if err != nil {
+			last = &TransientError{Status: 0}
+			c.log.Warn("stepik refresh transport error", "latency_ms", latency)
+			continue
+		}
+		body, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if rerr != nil {
+			last = &TransientError{Status: resp.StatusCode}
+			continue
+		}
+		switch {
+		case resp.StatusCode == http.StatusOK:
+			var v struct {
+				AccessToken  string `json:"access_token"`
+				RefreshToken string `json:"refresh_token"`
+				ExpiresIn    int64  `json:"expires_in"`
+			}
+			if err := json.Unmarshal(body, &v); err != nil {
+				return "", "", time.Time{}, err
+			}
+			if v.AccessToken == "" {
+				return "", "", time.Time{}, fmt.Errorf("stepik refresh empty access token")
+			}
+			if v.ExpiresIn > 0 {
+				expires = time.Now().Add(time.Duration(v.ExpiresIn) * time.Second)
+			} else {
+				expires = time.Now().Add(36000*time.Second - 300*time.Second)
+			}
+			c.log.Info("stepik refresh ok", "has_refresh", v.RefreshToken != "")
+			return v.AccessToken, v.RefreshToken, expires, nil
+		case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
+			after := retryAfter(resp.Header.Get("Retry-After"))
+			c.log.Warn("stepik refresh transient", "status", resp.StatusCode, "latency_ms", latency)
+			last = &TransientError{Status: resp.StatusCode, After: after}
+			continue
+		case resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized:
+			return "", "", time.Time{}, &UnauthorizedError{Status: resp.StatusCode}
+		default:
+			return "", "", time.Time{}, fmt.Errorf("stepik refresh status=%d", resp.StatusCode)
+		}
+	}
+	return "", "", time.Time{}, last
 }
 
 func (c *Client) get(ctx context.Context, token, path string, query url.Values, v any) error {
