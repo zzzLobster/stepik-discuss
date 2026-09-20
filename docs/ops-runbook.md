@@ -193,3 +193,70 @@ Open:
 ```bash
 iptables -t mangle -S POSTROUTING | grep 1380
 ```
+
+## 8. remark42 Gate-JWT auth — pitfalls + debug runbook (2026-09-19)
+
+### 8.1 Design recap
+
+- Remark native `Sign In → Stepik` with `AUTH_CUSTOM_CID=spike-placeholder-never-completes` is dead by design: go-pkgz/auth needs ≥1 provider (plan §6.1 D0), dummy `cid/csec` can never complete.
+- Real login is Gate `/auth/login → /auth/callback`; per-request Gate-minted `X-JWT + X-XSRF-TOKEN` via Caddy `forward_auth ... copy_headers`, browser never sees JWT.
+- Callback URL proof: remark native is `/discuss/auth/stepik/callback` vs Gate `/auth/callback`. Testing the former tests nothing.
+
+### 8.2 Two Caddy pitfalls fixed in `4c17b02`/`b9eeb29`
+
+- (a) Redundant `header_up X-JWT {http.request.header.X-JWT}` re-set after copy: canonical Go header is `X-Jwt` vs `X-JWT`, plus empty-clear risk on some adapts. Removed; rely on `copy_headers X-JWT X-XSRF-TOKEN` only.
+- (b) `request_header -X-JWT/-X-XSRF-TOKEN` in protected `handle_path /discuss/*` adapts AFTER the copy and deletes the Gate JWT. Removed there only. Kept in public `handle /discuss/web/*`; kept `-Remote-User/-X-Auth-*` everywhere.
+- Spoof still safe: on allow `copy_headers` overwrites any client value; on deny Caddy never proxies.
+
+### 8.3 Debug runbook (keys only, `<placeholders>`, no values)
+
+```bash
+# 1. Secret match (hash-compare, values never leave VPS)
+docker compose exec gate printenv REMARK_JWT_SECRET | sha256sum
+docker compose exec remark42 printenv SECRET | sha256sum
+# want identical hashes
+
+# 2. SITE / REMARK_URL match
+docker compose exec gate printenv SITE REMARK_URL
+docker compose exec remark42 printenv SITE REMARK_URL
+# want SITE=<site> on both, REMARK_URL=https://<host>/discuss on both
+
+# 3. No manual X-JWT re-set in adapted JSON
+docker run --rm -v $PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro caddy:2.11.4-alpine \
+  caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile | grep -c 'http.request.header.X'
+# want 0
+
+# 4. Gate mint check (from caddy net, want 200 + both headers)
+docker compose exec caddy wget -qSO- \
+  --header="Cookie: __Host-sid=<sid>" \
+  --header="X-Forwarded-Uri: /discuss/api/v1/find?site=<site>&url=https://<host>/class/<cid>" \
+  --header="Referer: https://<host>/class/<cid>" \
+  http://gate:8081/auth/check 2>&1 | grep -iE '^  HTTP/|X-JWT|X-XSRF-TOKEN'
+
+# 5. Direct-to-remark replay (inside container, status only — no JWT leak)
+docker compose exec caddy sh -c \
+  'curl -sS -o /dev/null -w "direct:%{http_code}\n" \
+  -H "X-JWT: <jwt-from-step-4>" -H "X-XSRF-TOKEN: <xsrf-from-step-4>" \
+  "http://remark42:8080/api/v1/find?site=<site>&url=https://<host>/class/<cid>"'
+# want direct:200
+
+# 6. Edge check (__Host-sid from devtools Application→Cookies, HttpOnly; Referer = class URL)
+curl -sS -o /dev/null -w 'edge:%{http_code}\n' \
+  -b '__Host-sid=<sid>' -e 'https://<host>/class/<cid>' \
+  'https://<host>/discuss/api/v1/find?site=<site>&url=https://<host>/class/<cid>'
+# want edge:200
+
+# 7. remark DEBUG one-repro tail (run one edge curl, then immediately)
+docker compose logs remark42 2>&1 | grep -iE '401|jwt|app-name|auth' | tail -20
+```
+
+- `/discuss/auth/list` without `Referer` → Gate `403 forbidden` is expected (`ExtractCID` fail-closed on missing `?url=`/class `Referer`), not a remark bug. Retest with `-e https://<host>/class/<cid>`.
+- Two dirs on VPS (`/opt/git` vs `/opt/stepik-discuss`): always `pwd; git log --oneline -3` in the compose dir before debugging, and `docker compose up -d caddy` after every pull — otherwise you test a stale Caddyfile.
+
+### 8.4 Symptom table
+
+| Gate `check` | remark | Meaning |
+|---|---|---|
+| `check allow` + remark `401 app-name: remark42` | `direct:200` untested | Downstream of Gate: secret/claims/Caddy copy — run §8.3 steps 1–5 |
+| `direct:200` + edge `401` | Caddy copy/strip | `forward_auth copy_headers` or `request_header -X-JWT` regression — run step 3 |
+| `direct:401` | secret/claims/clock | `SECRET` mismatch, `aud/iss/exp` drift, or `SITE`/`REMARK_URL` mismatch — run steps 1–2 |
