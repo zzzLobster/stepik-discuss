@@ -44,7 +44,7 @@ stepik.study67.fyi {
 	}
 
 	@static {
-		path / /static/* /manifest.json /sw.js /robots.txt
+		path / /static/* /manifest.json /sw.js /robots.txt /favicon.ico
 	}
 	handle @static {
 		reverse_proxy gate:8081
@@ -66,11 +66,6 @@ stepik.study67.fyi {
 
 	handle /auth/* {
 		reverse_proxy gate:8081
-	}
-
-	handle /favicon.ico {
-		header Cache-Control "public, max-age=86400"
-		respond "" 204
 	}
 
 	# remark42 serves API+web at ROOT (/api/..., /web/...); REMARK_URL path

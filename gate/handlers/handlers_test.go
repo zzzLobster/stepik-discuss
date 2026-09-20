@@ -320,6 +320,151 @@ func TestManifest_sw_robots(t *testing.T) {
 	}
 }
 
+func TestFavicon(t *testing.T) {
+	s, _ := testServer(t, baseCfg())
+	mux := s.Routes()
+	serve := func(method, path string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		return w
+	}
+
+	w := serve(http.MethodGet, "/favicon.ico")
+	if w.Code != http.StatusOK {
+		t.Fatalf("/favicon.ico status = %d, want 200", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "image/x-icon" {
+		t.Errorf("/favicon.ico Content-Type = %q, want image/x-icon", ct)
+	}
+	if cc := w.Header().Get("Cache-Control"); cc != "public,max-age=3600" {
+		t.Errorf("/favicon.ico Cache-Control = %q, want public,max-age=3600", cc)
+	}
+	raw := w.Body.Bytes()
+	if len(raw) == 0 {
+		t.Fatal("/favicon.ico empty body, want non-empty")
+	}
+	if len(raw) < 4 || raw[0] != 0x00 || raw[1] != 0x00 || raw[2] != 0x01 || raw[3] != 0x00 {
+		preview := raw
+		if len(preview) > 16 {
+			preview = preview[:16]
+		}
+		t.Errorf("/favicon.ico missing ICO magic 00 00 01 00, got % x", preview)
+	}
+
+	if w = serve(http.MethodPost, "/favicon.ico"); w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /favicon.ico = %d, want 405", w.Code)
+	}
+	if allow := serve(http.MethodPost, "/favicon.ico").Header().Get("Allow"); allow != "GET, HEAD" {
+		t.Errorf("POST /favicon.ico Allow = %q, want GET, HEAD", allow)
+	}
+
+	w = serve(http.MethodHead, "/favicon.ico")
+	if w.Code != http.StatusOK {
+		t.Errorf("HEAD /favicon.ico = %d, want 200", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "image/x-icon" {
+		t.Errorf("HEAD /favicon.ico Content-Type = %q, want image/x-icon", ct)
+	}
+}
+
+func TestStaticImages(t *testing.T) {
+	s, _ := testServer(t, baseCfg())
+	mux := s.Routes()
+	serve := func(method, path string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		return w
+	}
+	const expectedTheme = "#3776AB"
+
+	w := serve(http.MethodGet, "/static/favicon.svg")
+	if w.Code != http.StatusOK {
+		t.Fatalf("/static/favicon.svg status = %d, want 200", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "image/svg+xml" {
+		t.Errorf("/static/favicon.svg Content-Type = %q, want image/svg+xml", ct)
+	}
+	if cc := w.Header().Get("Cache-Control"); cc != "public,max-age=3600" {
+		t.Errorf("/static/favicon.svg Cache-Control = %q, want public,max-age=3600", cc)
+	}
+	svg := w.Body.String()
+	for _, want := range []string{expectedTheme, "#FFD43B"} {
+		if !strings.Contains(svg, want) {
+			t.Errorf("/static/favicon.svg missing %q", want)
+		}
+	}
+	if strings.Contains(strings.ToLower(svg), "1a73e8") {
+		t.Error("/static/favicon.svg contains stale #1a73e8")
+	}
+
+	for _, p := range []string{"/static/icon-192.png", "/static/icon-512.png", "/static/apple-touch-icon.png"} {
+		w = serve(http.MethodGet, p)
+		if w.Code != http.StatusOK {
+			t.Errorf("%s status = %d, want 200", p, w.Code)
+			continue
+		}
+		if ct := w.Header().Get("Content-Type"); ct != "image/png" {
+			t.Errorf("%s Content-Type = %q, want image/png", p, ct)
+		}
+		if cc := w.Header().Get("Cache-Control"); cc != "public,max-age=3600" {
+			t.Errorf("%s Cache-Control = %q, want public,max-age=3600", p, cc)
+		}
+		if w.Body.Len() == 0 {
+			t.Errorf("%s empty body, want non-empty", p)
+		}
+	}
+
+	if w = serve(http.MethodGet, "/static/missing.png"); w.Code != http.StatusNotFound {
+		t.Errorf("GET /static/missing.png = %d, want 404", w.Code)
+	}
+	if w = serve(http.MethodPost, "/static/style.css"); w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /static/style.css = %d, want 405", w.Code)
+	}
+	if allow := serve(http.MethodPost, "/static/style.css").Header().Get("Allow"); allow != "GET, HEAD" {
+		t.Errorf("POST /static/style.css Allow = %q, want GET, HEAD", allow)
+	}
+}
+
+func TestManifest(t *testing.T) {
+	s, _ := testServer(t, baseCfg())
+	mux := s.Routes()
+	serve := func(method, path string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		return w
+	}
+	const expectedTheme = "#3776AB"
+
+	w := serve(http.MethodGet, "/manifest.json")
+	if w.Code != http.StatusOK {
+		t.Fatalf("/manifest.json status = %d, want 200", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/manifest+json" {
+		t.Errorf("/manifest.json Content-Type = %q, want application/manifest+json", ct)
+	}
+	if cc := w.Header().Get("Cache-Control"); cc != "public,max-age=3600" {
+		t.Errorf("/manifest.json Cache-Control = %q, want public,max-age=3600", cc)
+	}
+	manifest := w.Body.String()
+	for _, want := range []string{
+		"theme_color", expectedTheme,
+		"background_color", "#ffffff",
+		"/static/icon-192.png",
+		"192x192", "512x512", "purpose",
+	} {
+		if !strings.Contains(manifest, want) {
+			t.Errorf("/manifest.json missing %q: %s", want, manifest)
+		}
+	}
+
+	if w = serve(http.MethodPost, "/static/icon-192.png"); w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /static/icon-192.png = %d, want 405", w.Code)
+	}
+}
+
 func TestIndex_anonShowsConsent(t *testing.T) {
 	s, _ := testServer(t, baseCfg())
 	r := httptest.NewRequest("GET", "/", nil)

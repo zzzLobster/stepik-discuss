@@ -79,6 +79,7 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("/manifest.json", s.handleManifest)
 	mux.HandleFunc("/sw.js", s.handleSW)
 	mux.HandleFunc("/robots.txt", s.handleRobots)
+	mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	mux.HandleFunc("/static/", s.handleStatic)
 	mux.HandleFunc("/auth/login", s.handleLogin)
 	mux.HandleFunc("/auth/callback", s.handleCallback)
@@ -595,14 +596,20 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/manifest+json")
-	w.Header().Set("Cache-Control", "private,no-store")
+	w.Header().Set("Cache-Control", "public,max-age=3600")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"name":       "Обсуждения классов Stepik",
-		"short_name": "Stepik Discuss",
-		"display":    "standalone",
-		"scope":      "/",
-		"start_url":  "/",
-		"lang":       "ru",
+		"name":             "Обсуждения классов Stepik",
+		"short_name":       "Stepik Discuss",
+		"display":          "standalone",
+		"scope":            "/",
+		"start_url":        "/",
+		"lang":             "ru",
+		"theme_color":      "#3776AB",
+		"background_color": "#ffffff",
+		"icons": []map[string]string{
+			{"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png"},
+			{"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
+		},
 	})
 }
 
@@ -618,6 +625,11 @@ func (s *Server) handleRobots(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 	name := strings.TrimPrefix(r.URL.Path, "/static/")
 	if name == "" || strings.Contains(name, "..") {
 		http.NotFound(w, r)
@@ -628,10 +640,39 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if strings.HasSuffix(name, ".css") {
+	switch {
+	case strings.HasSuffix(name, ".css"):
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case strings.HasSuffix(name, ".svg"):
+		w.Header().Set("Content-Type", "image/svg+xml")
+	case strings.HasSuffix(name, ".ico"):
+		w.Header().Set("Content-Type", "image/x-icon")
+	case strings.HasSuffix(name, ".png"):
+		w.Header().Set("Content-Type", "image/png")
 	}
 	w.Header().Set("Cache-Control", "public,max-age=3600")
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(raw)
+}
+
+func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	raw, err := fs.ReadFile(s.staticFS, "favicon.ico")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "image/x-icon")
+	w.Header().Set("Cache-Control", "public,max-age=3600")
+	if r.Method == http.MethodHead {
+		return
+	}
 	_, _ = w.Write(raw)
 }
 
