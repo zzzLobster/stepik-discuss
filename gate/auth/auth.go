@@ -1164,7 +1164,17 @@ func (c *Checker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			deny(http.StatusForbidden, codeTeacherOnly, 0, "deny")
 			return
 		}
-		c.mint(w, r, sess, 0, false, start, cfRay)
+		stale, err := c.EnsureFresh(r.Context(), sid, sess)
+		if err != nil {
+			if errors.Is(err, ErrExpired) {
+				deny(http.StatusUnauthorized, codeAuthRequired, 0, "deny")
+				return
+			}
+			deny(http.StatusServiceUnavailable, codeTransient, 0, "transient")
+			return
+		}
+		SlideSession(c.Store, sid, sess, time.Now())
+		c.mint(w, r, sess, 0, stale, start, cfRay)
 		return
 	}
 	referer := r.Header.Get("Referer")

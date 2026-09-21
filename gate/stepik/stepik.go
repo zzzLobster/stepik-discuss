@@ -23,6 +23,8 @@ const (
 	AuthorizeURL = "https://stepik.org/oauth2/authorize/"
 	TokenURL     = "https://stepik.org/oauth2/token/"
 	APIBase      = "https://stepik.org/api"
+	// MaxClassPages caps class pagination (~200 classes at page size 20).
+	MaxClassPages = 10
 )
 
 type Class struct {
@@ -384,6 +386,10 @@ func (c *Client) listPages(ctx context.Context, token string, q url.Values) ([]C
 	var all []Class
 	page := 1
 	for {
+		if page > MaxClassPages {
+			c.log.Warn("stepik classes page cap hit", "pages", MaxClassPages, "total", len(all))
+			break
+		}
 		qq := url.Values{}
 		for k, vs := range q {
 			qq[k] = vs
@@ -393,12 +399,19 @@ func (c *Client) listPages(ctx context.Context, token string, q url.Values) ([]C
 		if err := c.get(ctx, token, "/classes", qq, &v); err != nil {
 			return nil, err
 		}
+		if len(v.Classes) == 0 {
+			if v.Meta.HasNext {
+				c.log.Warn("stepik classes empty page with has_next", "page", page, "total", len(all))
+			}
+			break
+		}
 		all = append(all, v.Classes...)
 		if !v.Meta.HasNext {
 			return all, nil
 		}
 		page++
 	}
+	return all, nil
 }
 
 func (c *Client) ListByStudent(ctx context.Context, token string, studentID int64) ([]Class, error) {
