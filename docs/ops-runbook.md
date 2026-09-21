@@ -263,7 +263,7 @@ docker compose logs remark42 2>&1 | grep -iE '401|jwt|app-name|auth' | tail -20
 
 ## 9. Refresh-token ops (hybrid renewal, 2026-09-20)
 
-Capture: `ExchangeCode` (`Scopes: read+write`) stores access + refresh
+Capture: `ExchangeCode` (`Scopes: read`, cut from `read+write` in `f16b899`) stores access + refresh
 encrypted (AES-256-GCM) in the session row and, for the teacher, in
 `teacher_token/current`. Renew: silent `RedeemRefresh` on `401` or
 probe-mismatch (`teacher_401`/`teacher_probe`/`student_401`/`student_probe`
@@ -273,10 +273,11 @@ single-flight per `sid:<sid>` / `teacher:current` with `ObtainedAt` fencing
 
 ### 9.1 Event names
 
-- Demand (per-request, `gate/auth/auth.go:tryRenew*`): `teacher_renew_demand_start`,
-  `teacher_renew_demand_success` (`rotated=true/false`), `teacher_renew_demand_invalid_grant`,
-  `teacher_renew_demand_transient`, `teacher_renew_demand_superseded`.
-  Background record renews add `"scope":"teacher_record"`; `reason` is
+- Demand: `session_renew_demand_*` (`scope=session`, student SIDs) +
+  `teacher_renew_demand_*` (`scope=teacher_session`, teacher SIDs + dual-write) +
+  same names with `scope=teacher_record` (background loop). Verbs: `start`,
+  `success` (`rotated=true/false`), `invalid_grant`, `transient`, `superseded`.
+  `reason` is
   `teacher_401`/`teacher_probe`/`student_401`/`student_probe` on demand,
   `background_expiry`/`background_probe` in the loop.
 - Background loop (`gate/auth/teacher_refresh.go`): `teacher_background_alive`,
@@ -287,13 +288,13 @@ single-flight per `sid:<sid>` / `teacher:current` with `ObtainedAt` fencing
 
 ### 9.2 Pager: invalid_grant rate
 
-- `teacher_renew_demand_invalid_grant` at `info` = one dead refresh chain
-  (user revoked at Stepik / rotation loser) → re-login, not a page.
+- `session_renew_demand_invalid_grant` / `teacher_renew_demand_invalid_grant` at `info` = one dead refresh chain
+  (user revoked at Stepik / rotation loser) → re-login, not a page. Split pager by `scope=session` vs `scope=teacher_session`.
 - Page when the rate spikes across many uids or the teacher record parks with
   `reason=invalid_grant` (shared fallback dead): check
   `teacher_background_parked` + teacher banner on `/`, ask the teacher to
   re-login via Stepik (re-seeds both records unconditionally).
-- `teacher_renew_demand_transient` / `teacher_background_transient` at `warn`
+- `session_renew_demand_transient` / `teacher_renew_demand_transient` / `teacher_background_transient` at `warn`
   = Stepik 429/5xx/transport → stale-in-grace, no action unless sustained.
 
 ### 9.3 Parked / unparked + 6h escape
@@ -325,11 +326,4 @@ single-flight per `sid:<sid>` / `teacher:current` with `ObtainedAt` fencing
 
 ### 9.6 Scope note (plan §10 decision stands)
 
-- write scope is requested but never used — Stepik issues read+write as an indivisible bundle, Gate performs zero write calls, refresh omits scope so it is preserved.
-- Login sends `Scopes: read+write` because Stepik offers no finer scope; Gate
-  only ever reads (`GetLoggedID`, `GetProfile`, `ListOwned`,
-  `VerifyStudent`). `RedeemRefresh` posts only
-  `grant_type=refresh_token&refresh_token=…` (no `scope` param), so the
-  granted bundle is preserved as-is. No explainer on the login page per plan
-  §10 (consent + button only); if a student asks why "read write", answer: we
-  only read class list + profile.
+Scope is now `read`-only. `AuthCodeURL`/`ExchangeCode` send `Scopes: ["read"]`; `RedeemRefresh` posts no `scope` param so each chain keeps whatever it was granted. **Mixed-scope rollout:** pre-cut sessions and the shared `teacher_token/current` row keep their `read+write` bundle until the teacher re-logins (refresh never narrows scope); post-cut logins are `read`-only. Both work — Gate only ever reads (`GetLoggedID`, `GetProfile`, `ListOwned`, `VerifyStudent`). If a student asks why an old consent screen said "read write", answer: we only read class list + profile; new logins ask read only. No login-page explainer per plan §10.

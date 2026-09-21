@@ -434,7 +434,7 @@ func (c *Checker) tryRenewSession(ctx context.Context, sid, reason string) (stri
 	uid := cur.StepikUserID
 	if pre != nil && !cur.TokenObtainedAt.Equal(preObtained) {
 		if winner, werr := c.Store.DecryptToken(cur.TokenCiphertext, cur.TokenNonce); werr == nil {
-			c.Log.Info("teacher_renew_demand_superseded", "uid", uid, "reason", reason)
+			c.Log.Info("session_renew_demand_superseded", "uid", uid, "reason", reason, "scope", "session")
 			return winner, renewOK
 		}
 		return "", renewNone
@@ -448,15 +448,15 @@ func (c *Checker) tryRenewSession(ctx context.Context, sid, reason string) (stri
 	if err != nil {
 		return "", renewNone
 	}
-	c.Log.Info("teacher_renew_demand_start", "uid", uid, "reason", reason)
+	c.Log.Info("session_renew_demand_start", "uid", uid, "reason", reason, "scope", "session")
 	access, refreshOut, expires, rerr := c.redeem(ctx, refresh)
 	if rerr != nil {
 		if stepik.IsUnauthorized(rerr) {
 			c.clearSessionRefresh(sid, obtained, refreshObtained)
-			c.Log.Info("teacher_renew_demand_invalid_grant", "uid", uid, "reason", reason)
+			c.Log.Info("session_renew_demand_invalid_grant", "uid", uid, "reason", reason, "scope", "session")
 			return "", renewExpired
 		}
-		c.Log.Warn("teacher_renew_demand_transient", "uid", uid, "reason", reason)
+		c.Log.Warn("session_renew_demand_transient", "uid", uid, "reason", reason, "scope", "session")
 		return "", renewTransient
 	}
 	live, gerr := c.Store.GetSession(sid)
@@ -465,14 +465,14 @@ func (c *Checker) tryRenewSession(ctx context.Context, sid, reason string) (stri
 	}
 	if !live.TokenObtainedAt.Equal(obtained) {
 		if winner, werr := c.Store.DecryptToken(live.TokenCiphertext, live.TokenNonce); werr == nil {
-			c.Log.Info("teacher_renew_demand_superseded", "uid", uid, "reason", reason)
+			c.Log.Info("session_renew_demand_superseded", "uid", uid, "reason", reason, "scope", "session")
 			return winner, renewOK
 		}
 		return "", renewNone
 	}
 	ct, nonce, eerr := c.Store.EncryptToken(access)
 	if eerr != nil {
-		c.Log.Warn("teacher_renew_demand_transient", "uid", uid, "reason", reason)
+		c.Log.Warn("session_renew_demand_transient", "uid", uid, "reason", reason, "scope", "session")
 		return "", renewTransient
 	}
 	live.TokenCiphertext = ct
@@ -489,10 +489,10 @@ func (c *Checker) tryRenewSession(ctx context.Context, sid, reason string) (stri
 		}
 	}
 	if perr := c.Store.PutSession(sid, live); perr != nil {
-		c.Log.Warn("teacher_renew_demand_transient", "uid", uid, "reason", reason)
+		c.Log.Warn("session_renew_demand_transient", "uid", uid, "reason", reason, "scope", "session")
 		return "", renewTransient
 	}
-	c.Log.Info("teacher_renew_demand_success", "uid", uid, "reason", reason, "rotated", rotated)
+	c.Log.Info("session_renew_demand_success", "uid", uid, "reason", reason, "scope", "session", "rotated", rotated)
 	return access, renewOK
 }
 
@@ -539,7 +539,7 @@ func (c *Checker) tryRenewTeacherSession(ctx context.Context, sid, reason string
 	uid := cur.StepikUserID
 	if pre != nil && !cur.TokenObtainedAt.Equal(preObtained) {
 		if winner, werr := c.Store.DecryptToken(cur.TokenCiphertext, cur.TokenNonce); werr == nil {
-			c.Log.Info("teacher_renew_demand_superseded", "uid", uid, "reason", reason)
+			c.Log.Info("teacher_renew_demand_superseded", "uid", uid, "reason", reason, "scope", "teacher_session")
 			return winner, renewOK
 		}
 		return "", renewNone
@@ -557,7 +557,7 @@ func (c *Checker) tryRenewTeacherSession(ctx context.Context, sid, reason string
 				cur.RefreshObtainedAt = teacherCur.RefreshObtainedAt
 			}
 			_ = c.Store.PutSession(sid, cur)
-			c.Log.Info("teacher_renew_demand_superseded", "uid", uid, "reason", reason)
+			c.Log.Info("teacher_renew_demand_superseded", "uid", uid, "reason", reason, "scope", "teacher_session")
 			return winner, renewOK
 		}
 		return "", renewNone
@@ -572,7 +572,7 @@ func (c *Checker) tryRenewTeacherSession(ctx context.Context, sid, reason string
 			cur.RefreshNonce = teacherCur.RefreshNonce
 			cur.RefreshObtainedAt = teacherCur.RefreshObtainedAt
 			_ = c.Store.PutSession(sid, cur)
-			c.Log.Info("teacher_renew_demand_superseded", "uid", uid, "reason", reason)
+			c.Log.Info("teacher_renew_demand_superseded", "uid", uid, "reason", reason, "scope", "teacher_session")
 			return winner, renewOK
 		}
 		return "", renewNone
@@ -591,7 +591,7 @@ func (c *Checker) tryRenewTeacherSession(ctx context.Context, sid, reason string
 	if err != nil {
 		return "", renewNone
 	}
-	c.Log.Info("teacher_renew_demand_start", "uid", uid, "reason", reason)
+	c.Log.Info("teacher_renew_demand_start", "uid", uid, "reason", reason, "scope", "teacher_session")
 	access, refreshOut, expires, rerr := c.redeem(ctx, refresh)
 	if rerr != nil {
 		if stepik.IsUnauthorized(rerr) {
@@ -599,10 +599,10 @@ func (c *Checker) tryRenewTeacherSession(ctx context.Context, sid, reason string
 			if teacherCur != nil {
 				c.clearTeacherRefresh(teacherObtained, teacherRefreshObtained)
 			}
-			c.Log.Info("teacher_renew_demand_invalid_grant", "uid", uid, "reason", reason)
+			c.Log.Info("teacher_renew_demand_invalid_grant", "uid", uid, "reason", reason, "scope", "teacher_session")
 			return "", renewExpired
 		}
-		c.Log.Warn("teacher_renew_demand_transient", "uid", uid, "reason", reason)
+		c.Log.Warn("teacher_renew_demand_transient", "uid", uid, "reason", reason, "scope", "teacher_session")
 		return "", renewTransient
 	}
 	live, gerr := c.Store.GetSession(sid)
@@ -612,7 +612,7 @@ func (c *Checker) tryRenewTeacherSession(ctx context.Context, sid, reason string
 	liveTeacher, _ := c.Store.GetTeacherToken()
 	if !live.TokenObtainedAt.Equal(obtained) {
 		if winner, werr := c.Store.DecryptToken(live.TokenCiphertext, live.TokenNonce); werr == nil {
-			c.Log.Info("teacher_renew_demand_superseded", "uid", uid, "reason", reason)
+			c.Log.Info("teacher_renew_demand_superseded", "uid", uid, "reason", reason, "scope", "teacher_session")
 			return winner, renewOK
 		}
 		return "", renewNone
@@ -629,14 +629,14 @@ func (c *Checker) tryRenewTeacherSession(ctx context.Context, sid, reason string
 				live.RefreshObtainedAt = liveTeacher.RefreshObtainedAt
 			}
 			_ = c.Store.PutSession(sid, live)
-			c.Log.Info("teacher_renew_demand_superseded", "uid", uid, "reason", reason)
+			c.Log.Info("teacher_renew_demand_superseded", "uid", uid, "reason", reason, "scope", "teacher_session")
 			return winner, renewOK
 		}
 		return "", renewNone
 	}
 	ct, nonce, eerr := c.Store.EncryptToken(access)
 	if eerr != nil {
-		c.Log.Warn("teacher_renew_demand_transient", "uid", uid, "reason", reason)
+		c.Log.Warn("teacher_renew_demand_transient", "uid", uid, "reason", reason, "scope", "teacher_session")
 		return "", renewTransient
 	}
 	now := time.Now()
@@ -663,7 +663,7 @@ func (c *Checker) tryRenewTeacherSession(ctx context.Context, sid, reason string
 		}
 	}
 	if perr := c.Store.PutSession(sid, live); perr != nil {
-		c.Log.Warn("teacher_renew_demand_transient", "uid", uid, "reason", reason)
+		c.Log.Warn("teacher_renew_demand_transient", "uid", uid, "reason", reason, "scope", "teacher_session")
 		return "", renewTransient
 	}
 	owner := c.Cfg.TeacherID
@@ -704,10 +704,10 @@ func (c *Checker) tryRenewTeacherSession(ctx context.Context, sid, reason string
 		// loop re-checks session freshness before parking on invalid_grant
 		// (see teacherBackgroundRenew) instead of parking on the stale
 		// teacher refresh.
-		c.Log.Warn("teacher_renew_demand_transient", "uid", uid, "reason", reason)
+		c.Log.Warn("teacher_renew_demand_transient", "uid", uid, "reason", reason, "scope", "teacher_session")
 		return "", renewTransient
 	}
-	c.Log.Info("teacher_renew_demand_success", "uid", uid, "reason", reason, "rotated", rotated)
+	c.Log.Info("teacher_renew_demand_success", "uid", uid, "reason", reason, "scope", "teacher_session", "rotated", rotated)
 	return access, renewOK
 }
 
