@@ -12,7 +12,9 @@ services:
     environment:
       CADDY_GATE_TOKEN: ${CADDY_GATE_TOKEN}
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:80/healthz || exit 1"]
+      # Hits the dedicated http://localhost:8081 site (see Caddyfile) — the
+      # main site 308-redirects HTTP->HTTPS and has no cert for "localhost".
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/healthz || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3

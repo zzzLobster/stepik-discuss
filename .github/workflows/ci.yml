@@ -80,3 +80,17 @@ jobs:
         if: always()
         working-directory: spike
         run: docker compose down
+
+  caddy-contract:
+    name: Caddy proxy/gate contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Covers contracts no Go unit test can see (unit tests call the gate
+      # directly with hand-built headers): forward_auth must send the gate the
+      # FULL public URI (/discuss prefix + query), the /discuss redirects must
+      # be 308, and the healthcheck listener must answer on localhost:8081.
+      # Runs the pinned caddy image against the real deploy/Caddyfile.
+      - name: Run contract checks
+        run: deploy/caddy-verify.sh

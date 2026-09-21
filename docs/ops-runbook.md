@@ -202,11 +202,14 @@ iptables -t mangle -S POSTROUTING | grep 1380
 - Real login is Gate `/auth/login → /auth/callback`; per-request Gate-minted `X-JWT + X-XSRF-TOKEN` via Caddy `forward_auth ... copy_headers`, browser never sees JWT.
 - Callback URL proof: remark native is `/discuss/auth/stepik/callback` vs Gate `/auth/callback`. Testing the former tests nothing.
 
-### 8.2 Two Caddy pitfalls fixed in `4c17b02`/`b9eeb29`
+### 8.2 Three Caddy pitfalls fixed in `4c17b02`/`b9eeb29` (+ 2026-09-21 contract fixes)
 
 - (a) Redundant `header_up X-JWT {http.request.header.X-JWT}` re-set after copy: canonical Go header is `X-Jwt` vs `X-JWT`, plus empty-clear risk on some adapts. Removed; rely on `copy_headers X-JWT X-XSRF-TOKEN` only.
 - (b) `request_header -X-JWT/-X-XSRF-TOKEN` in protected `handle_path /discuss/*` adapts AFTER the copy and deletes the Gate JWT. Removed there only. Kept in public `handle /discuss/web/*`; kept `-Remote-User/-X-Auth-*` everywhere.
 - Spoof still safe: on allow `copy_headers` overwrites any client value; on deny Caddy never proxies.
+- (c) 2026-09-21: `handle_path` strips `/discuss` BEFORE the auth subrequest, so `header_up X-Forwarded-Uri {uri}` sent the gate `/admin/...` — the gate's teacher-only branch matches `/discuss/admin/...` and never fired. Fixed to `header_up X-Forwarded-Uri /discuss{uri}` (full public URI + query). Contract enforced by `deploy/caddy-verify.sh` (CI job `caddy-contract`).
+- (d) 2026-09-21: 2-arg `redir /discuss/ 308` adapts to a bogus Location (blank 200, no redirect). Use the 3-arg form `redir /discuss /discuss/ 308`.
+- (e) 2026-09-21: container healthcheck must hit `http://localhost:8081/healthz` (dedicated plain-HTTP listener in the Caddyfile). The main site 308-redirects HTTP→HTTPS and has no cert for `localhost`, so port-80 healthchecks can never pass.
 
 ### 8.3 Debug runbook (keys only, `<placeholders>`, no values)
 

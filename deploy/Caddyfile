@@ -71,18 +71,18 @@ stepik.study67.fyi {
 	# remark42 serves API+web at ROOT (/api/..., /web/...); REMARK_URL path
 	# prefix is URL-generation only. handle_path strips /discuss so upstream
 	# sees root paths (spike-verified 2026-09-17: prefixed /user->404).
-	# X-Forwarded-Uri keeps ?query (cid comes from ?url=/Referer), path strip safe.
+	# forward_auth re-adds the /discuss prefix in X-Forwarded-Uri (below).
 	# Public: static embed assets bypass gate auth. iframe.html subrequests
 	# (remark.mjs/css) carry Referer=/discuss/web/iframe.html without ?url=,
 	# so ExtractCID denies by design; auth is enforced at /api/* instead.
-	# Exact paths without trailing slash miss handle_path /* match;
-	# redirect to trailing slash so prefix strip then applies.
+	# Exact paths without trailing slash are redirected to the slash form
+	# (3-arg redir; 2-arg adapts to a bogus Location) so prefix strip applies.
 	handle /discuss {
-		redir /discuss/ 308
+		redir /discuss /discuss/ 308
 	}
 
 	handle /discuss/web {
-		redir /discuss/web/ 308
+		redir /discuss/web /discuss/web/ 308
 	}
 
 	handle /discuss/web/* {
@@ -110,7 +110,11 @@ stepik.study67.fyi {
 		request_header -X-Auth-User
 		forward_auth gate:8081 {
 			uri /auth/check
-			header_up X-Forwarded-Uri {uri}
+			# handle_path already stripped /discuss, so {uri} alone would send
+			# "/admin/..." — the gate's teacher-only admin branch matches on the
+			# FULL public path "/discuss/admin/...". Re-add the prefix. Must stay
+			# in sync with gate/auth ServeHTTP + auth_test fwdFor contract.
+			header_up X-Forwarded-Uri /discuss{uri}
 			# CADDY_GATE_TOKEN env required; empty fails closed (Guard false -> 404).
 			header_up X-Gate-Auth {env.CADDY_GATE_TOKEN}
 			copy_headers X-JWT X-XSRF-TOKEN
@@ -120,5 +124,23 @@ stepik.study67.fyi {
 
 	handle {
 		respond "Not found" 404
+	}
+}
+
+# Container healthcheck listener: plain HTTP on localhost:8081. The main
+# site redirects HTTP->HTTPS (auto_https) and has no cert for "localhost",
+# so `wget http://localhost:80/healthz` can never succeed against it. This
+# site bypasses the redirect and proxies the gate's shallow /healthz only.
+# No ports entry (unpublished). It binds the container's wildcard interface
+# (:::8081, not loopback-only) and a docker-network peer can reach it by
+# sending Host: localhost:8081 — acceptable: it exposes only the already
+# public shallow /healthz; requests with other Hosts get Caddy's default
+# empty 200, and deep ?deep=1 still requires X-Gate-Auth (Guard).
+http://localhost:8081 {
+	handle /healthz {
+		reverse_proxy gate:8081
+	}
+	handle {
+		respond 404
 	}
 }
