@@ -134,7 +134,7 @@ func TestValidNext_matrix(t *testing.T) {
 		{"/class/82866/", "/class/82866/", true},
 		{"/class/1", "/class/1", true},
 		{"/class/1234567890", "/class/1234567890", true},
-		{"/class/12345678901", "", false},
+		{"/class/12345678901234567890", "", false},
 		{"/class/abc", "", false},
 		{"/class/", "", false},
 		{"/evil", "", false},

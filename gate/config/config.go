@@ -3,8 +3,10 @@ package config
 import (
 	"encoding/hex"
 	"errors"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -93,6 +95,9 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if c.RetryAfter > c.MaxStale {
+		return Config{}, errors.New("GATE_RETRY_AFTER must be <= GATE_MAX_STALE")
+	}
 	c.Site = getenv("SITE", DefaultSite)
 	c.RemarkURL = getenv("REMARK_URL", DefaultRemarkURL)
 	c.Origin = getenv("GATE_ORIGIN", DefaultOrigin)
@@ -105,5 +110,38 @@ func parseDuration(key, fallback string) (time.Duration, error) {
 	if err != nil {
 		return 0, errors.New(key + " must be a Go duration")
 	}
+	if d <= 0 {
+		return 0, errors.New(key + " must be > 0")
+	}
 	return d, nil
+}
+
+// ClassBase returns the canonical class page base derived from Origin.
+// Single source for page URLs parsed by ExtractCID note: ExtractCID still
+// matches against the ClassBaseURL const to limit blast radius in this MR.
+func (c Config) ClassBase() string {
+	return strings.TrimSuffix(c.Origin, "/") + "/class/"
+}
+
+// EmbedHost returns the normalized RemarkURL (keeps the /discuss base path
+// required by templates as {{.EmbedHost}}/web/embed.js). Falls back to
+// DefaultRemarkURL when RemarkURL is unset or unparsable. Query and fragment
+// are stripped; trailing slash is trimmed.
+// Note: ExtractCID still matches against the ClassBaseURL const, not
+// ClassBase() below, to limit blast radius in this MR.
+func (c Config) EmbedHost() string {
+	raw := c.RemarkURL
+	if raw == "" {
+		return DefaultRemarkURL
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return DefaultRemarkURL
+	}
+	return u.Scheme + "://" + u.Host + strings.TrimSuffix(u.Path, "/")
+}
+
+// AdminSharedID is the remark42 admin identifier for the teacher.
+func (c Config) AdminSharedID() string {
+	return "stepik_" + strconv.FormatInt(c.TeacherID, 10)
 }

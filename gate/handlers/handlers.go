@@ -40,8 +40,8 @@ const (
 	RUTeacherBanner    = "Проверка студентов приостановлена: токен преподавателя истёк. Войдите через Stepik ещё раз, чтобы возобновить её."
 )
 
-var nextPattern = regexp.MustCompile(`^/($|class/[0-9]{1,10}/?$)`)
-var classPathPattern = regexp.MustCompile(`^/class/([0-9]{1,10})/?$`)
+var nextPattern = regexp.MustCompile(`^/($|class/[0-9]{1,19}/?$)`)
+var classPathPattern = regexp.MustCompile(`^/class/([0-9]{1,19})/?$`)
 
 type oauthState struct {
 	next    string
@@ -271,12 +271,12 @@ func (s *Server) handleClass(w http.ResponseWriter, r *http.Request) {
 	if title == "" {
 		title = "Класс " + strconv.FormatInt(cid, 10)
 	}
-	pageURL := config.ClassBaseURL + strconv.FormatInt(cid, 10)
+	pageURL := s.cfg.ClassBase() + strconv.FormatInt(cid, 10)
 	s.render(w, http.StatusOK, "class.html", classData{
 		CID:       cid,
 		Title:     title,
 		StepikURL: "https://stepik.org/class/" + strconv.FormatInt(cid, 10),
-		EmbedHost: "https://stepik.study67.fyi/discuss",
+		EmbedHost: s.cfg.EmbedHost(),
 		SiteID:    s.cfg.Site,
 		PageURL:   pageURL,
 		FIO:       sess.FIO,
@@ -536,7 +536,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if r.Header.Get("Origin") != s.cfg.Origin {
+	if !validSameOrigin(r, s.cfg.Origin) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}

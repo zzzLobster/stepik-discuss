@@ -20,6 +20,7 @@ type Store struct {
 	login    map[string]*visitor
 	callback map[string]*visitor
 	discuss  map[string]*visitor
+	check    map[string]*visitor
 }
 
 func NewStore() *Store {
@@ -27,6 +28,7 @@ func NewStore() *Store {
 		login:    map[string]*visitor{},
 		callback: map[string]*visitor{},
 		discuss:  map[string]*visitor{},
+		check:    map[string]*visitor{},
 	}
 }
 
@@ -109,6 +111,12 @@ func (s *Store) AllowCallback(ip string) bool {
 
 func (s *Store) AllowDiscuss(sid string) (bool, time.Duration) {
 	return s.allow(s.discuss, sid, 600*time.Millisecond, 20)
+}
+
+// AllowCheckByIP is the pre-auth limiter for /auth/check: per-IP gate
+// before any session load, so unknown-SID floods cannot fan out to Bolt.
+func (s *Store) AllowCheckByIP(ip string) (bool, time.Duration) {
+	return s.allow(s.check, ip, 300*time.Millisecond, 30)
 }
 
 func Outbound() *rate.Limiter {

@@ -28,6 +28,8 @@ var (
 	SchemaVersion     = []byte("1")
 )
 
+var ErrCorrupt = errors.New("session corrupt")
+
 const (
 	CookieSID    = "__Host-sid"
 	CookieBinder = "__Host-oa"
@@ -262,7 +264,7 @@ func (s *Store) GetSession(sid string) (*SessionRecord, error) {
 		}
 		var r SessionRecord
 		if err := json.Unmarshal(raw, &r); err != nil {
-			return err
+			return ErrCorrupt
 		}
 		rec = &r
 		return nil
@@ -476,10 +478,13 @@ func (s *Store) sweep() error {
 		for k, raw := c.First(); k != nil; k, raw = c.Next() {
 			var r SessionRecord
 			if err := json.Unmarshal(raw, &r); err != nil {
+				if err := c.Delete(); err != nil {
+					return err
+				}
 				continue
 			}
 			if r.ExpiresAt.Before(cutoff) {
-				if err := b.Delete(k); err != nil {
+				if err := c.Delete(); err != nil {
 					return err
 				}
 			}

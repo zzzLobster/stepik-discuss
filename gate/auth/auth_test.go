@@ -125,7 +125,7 @@ func TestExtractCID_matrix(t *testing.T) {
 		{"pct25_upper_rejected", "/x?url=https://stepik.study67.fyi/class/82%2566", "", 0, true},
 		{"wrong_host", "/x?url=" + urlQueryEscape("https://evil.example/class/82866"), "", 0, true},
 		{"non_numeric", "/x?url=" + urlQueryEscape("https://stepik.study67.fyi/class/abc"), "", 0, true},
-		{"too_long", "/x?url=" + urlQueryEscape("https://stepik.study67.fyi/class/12345678901"), "", 0, true},
+		{"too_long", "/x?url=" + urlQueryEscape("https://stepik.study67.fyi/class/12345678901234567890"), "", 0, true},
 		{"empty", "", "", 0, true},
 		{"path_traversal", "/x?url=" + urlQueryEscape("https://stepik.study67.fyi/class/82866/../87566"), "", 0, true},
 		{"http_scheme", "/x?url=" + urlQueryEscape("http://stepik.study67.fyi/class/82866"), "", 0, true},

@@ -37,7 +37,7 @@ const (
 	codeRateLimited  = "rate_limited"
 )
 
-var cidPattern = regexp.MustCompile(`^[0-9]{1,10}$`)
+var cidPattern = regexp.MustCompile(`^[0-9]{1,19}$`)
 
 func Allowed(sess *sessions.SessionRecord, cid int64) bool {
 	if sess.IsTeacher {
@@ -58,6 +58,12 @@ func LoadSession(store *sessions.Store, r *http.Request) (*sessions.SessionRecor
 	}
 	sess, err := store.GetSession(c.Value)
 	if err != nil {
+		if errors.Is(err, sessions.ErrCorrupt) {
+			if err := store.DeleteSession(c.Value); err != nil {
+				return nil, "", err
+			}
+			return nil, "", ErrExpired
+		}
 		return nil, "", err
 	}
 	if sess == nil {
@@ -1135,6 +1141,12 @@ func (c *Checker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !Guard(r, c.Cfg.GateToken) {
 		c.Log.Warn("check bad gate auth", "cf_ray", cfRay)
 		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if ok, retryAfter := c.Limits.AllowCheckByIP(ratelimit.ClientIP(r)); !ok {
+		c.Log.Info("check deny", "uid", 0, "cid", 0, "owner", 0, "auth_path", "deny", "latency_ms", time.Since(start).Milliseconds(), "cf_ray", cfRay)
+		w.Header().Set("Retry-After", strconv.FormatInt(int64(retryAfter/time.Second), 10))
+		c.writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": codeRateLimited})
 		return
 	}
 	sess, sid, err := LoadSession(c.Store, r)
