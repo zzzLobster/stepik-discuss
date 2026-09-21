@@ -818,17 +818,29 @@ func (c *Checker) tryRenewTeacherRecord(ctx context.Context, reason string) (str
 }
 
 // putTeacherTokenFenced overwrites the shared teacher record unless it
-// advanced since snap (a concurrent renewal won); then the write is discarded.
-func (c *Checker) putTeacherTokenFenced(snap *sessions.TeacherToken, tok *sessions.TeacherToken, uid int64) {
+// advanced since snap or the calling SID holds a stale vintage; then the
+// write is discarded. sessTokenObtained/sessRefreshObtained are the calling
+// SID's vintages at the success branch (reloaded winner on renew paths,
+// load-time copy on first-try success).
+func (c *Checker) putTeacherTokenFenced(snap *sessions.TeacherToken, sessTokenObtained, sessRefreshObtained time.Time, tok *sessions.TeacherToken, uid int64) (wrote bool) {
 	unlock := c.renewMu.lock("teacher:current")
 	defer unlock()
-	if snap != nil {
-		if live, err := c.Store.GetTeacherToken(); err == nil && live != nil && !live.ObtainedAt.Equal(snap.ObtainedAt) {
-			c.Log.Info("teacher_renew_demand_superseded", "uid", uid, "reason", "teacher_verify", "scope", "teacher_record")
-			return
+	if live, err := c.Store.GetTeacherToken(); err == nil && live != nil {
+		if snap != nil && !live.ObtainedAt.Equal(snap.ObtainedAt) {
+			c.Log.Info("teacher_renew_demand_superseded", "uid", uid, "reason", "stale_snap", "scope", "teacher_record")
+			return false
+		}
+		if len(live.RefreshCiphertext) != 0 && live.RefreshObtainedAt.After(sessRefreshObtained) {
+			c.Log.Info("teacher_renew_demand_superseded", "uid", uid, "reason", "stale_refresh", "scope", "teacher_record")
+			return false
+		}
+		if live.ObtainedAt.After(sessTokenObtained) {
+			c.Log.Info("teacher_renew_demand_superseded", "uid", uid, "reason", "stale_access", "scope", "teacher_record")
+			return false
 		}
 	}
 	_ = c.Store.PutTeacherToken(tok)
+	return true
 }
 
 // SeedTeacherToken overwrites the shared teacher record unconditionally under
@@ -928,7 +940,7 @@ func (c *Checker) refreshTeacher(ctx context.Context, sid string, sess *sessions
 	if err != nil {
 		return false, err
 	}
-	c.putTeacherTokenFenced(teacherSnap, &sessions.TeacherToken{
+	wrote := c.putTeacherTokenFenced(teacherSnap, sess.TokenObtainedAt, sess.RefreshObtainedAt, &sessions.TeacherToken{
 		Ciphertext:        ct,
 		Nonce:             nonce,
 		ObtainedAt:        now,
@@ -939,6 +951,19 @@ func (c *Checker) refreshTeacher(ctx context.Context, sid string, sess *sessions
 		RefreshNonce:      sess.RefreshNonce,
 		RefreshObtainedAt: sess.RefreshObtainedAt,
 	}, sess.StepikUserID)
+	if !wrote {
+		if live, lerr := c.Store.GetTeacherToken(); lerr == nil && live != nil {
+			sess.TokenCiphertext = live.Ciphertext
+			sess.TokenNonce = live.Nonce
+			sess.TokenObtainedAt = live.ObtainedAt
+			sess.TokenExpiresAt = live.ExpiresAt
+			if len(live.RefreshCiphertext) != 0 {
+				sess.RefreshCiphertext = live.RefreshCiphertext
+				sess.RefreshNonce = live.RefreshNonce
+				sess.RefreshObtainedAt = live.RefreshObtainedAt
+			}
+		}
+	}
 	sess.AllowedClassIDs = idsOf(classes)
 	sess.ClassTitles = titlesOf(classes)
 	sess.LastVerifiedAt = now

@@ -556,3 +556,40 @@ func TestRenew_teacherFencingDiscard(t *testing.T) {
 		t.Errorf("stored refresh = %q, want winner-refresh", got)
 	}
 }
+
+func TestRefreshTeacher_StaleSidDoesNotRegressLiveRecord(t *testing.T) {
+	c := probeCAChecker(t)
+	now := time.Now()
+	seedTeacherRecord(t, c, "access-live", "refresh-live", now.Add(-time.Hour), now.Add(9*time.Hour))
+	putStaleSessionWithRefresh(t, c, "teach-stale", true, 1182644732, []int64{82866}, "access-stale", "refresh-stale")
+	c.ListOwnedFn = func(ctx context.Context, token string) ([]stepik.Class, error) {
+		if token != "access-stale" {
+			t.Errorf("listOwned token = %q, want access-stale", token)
+		}
+		return []stepik.Class{ownedClass(82866)}, nil
+	}
+	sess := mustGet(t, c, "teach-stale")
+	if _, err := c.refreshTeacher(context.Background(), "teach-stale", sess, now); err != nil {
+		t.Fatalf("refreshTeacher = %v", err)
+	}
+	if got := teacherAccess(t, c); got != "access-live" {
+		t.Errorf("shared access = %q, want access-live (no clobber by stale SID)", got)
+	}
+	tok, err := c.Store.GetTeacherToken()
+	if err != nil || tok == nil {
+		t.Fatal(err)
+	}
+	rplain, err := c.Store.DecryptToken(tok.RefreshCiphertext, tok.RefreshNonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rplain != "refresh-live" {
+		t.Errorf("shared refresh = %q, want refresh-live", rplain)
+	}
+	if got := storedAccess(t, c, "teach-stale"); got != "access-live" {
+		t.Errorf("stale SID access = %q, want access-live (adopt-live heal)", got)
+	}
+	if got, _ := storedRefresh(t, c, "teach-stale"); got != "refresh-live" {
+		t.Errorf("stale SID refresh = %q, want refresh-live", got)
+	}
+}
