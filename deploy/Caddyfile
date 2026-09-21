@@ -102,8 +102,9 @@ stepik.study67.fyi {
 		# same-origin iframe for remark42 embed; top-level pages stay DENY via global block.
 		header X-Frame-Options "SAMEORIGIN"
 		header Content-Security-Policy "frame-ancestors 'self'"
-		request_header -X-JWT
-		request_header -X-XSRF-TOKEN
+		# NOTE: do NOT strip X-JWT/X-XSRF-TOKEN here — copy_headers from
+		# forward_auth must survive (see b9eeb29, ops-runbook §8.2). Spoof
+		# safe: deny never proxies, allow overwrites via copy_headers.
 		request_header -Remote-User
 		request_header -X-Auth-Token
 		request_header -X-Auth-User
