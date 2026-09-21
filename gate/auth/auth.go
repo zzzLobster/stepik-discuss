@@ -279,8 +279,10 @@ func (c *Checker) EnsureFresh(ctx context.Context, sid string, sess *sessions.Se
 
 // ForceTeacherEmptyRefresh forces one live re-verify for a fresh teacher
 // session whose snapshot is empty. Bounded by NextRetryAt: at most one
-// attempt per RetryAfter window. Same (stale, err) taxonomy as EnsureFresh;
-// on genuinely-empty success it arms NextRetryAt so rapid HTML hits do not
+// attempt per RetryAfter window. (stale=true, nil) while in backoff grace;
+// (false, TransientError) beyond MaxStale; (false, ErrExpired) when refresh dead.
+// Callers must treat non-ErrExpired errors as transient.
+// On genuinely-empty success it arms NextRetryAt so rapid HTML hits do not
 // hammer Stepik. HTML helper path only; never used by /auth/check.
 func (c *Checker) ForceTeacherEmptyRefresh(ctx context.Context, sid string, sess *sessions.SessionRecord) (bool, error) {
 	now := time.Now()
@@ -288,7 +290,7 @@ func (c *Checker) ForceTeacherEmptyRefresh(ctx context.Context, sid string, sess
 		if now.Sub(sess.LastVerifiedAt) <= c.Cfg.MaxStale {
 			return true, nil
 		}
-		return false, nil
+		return false, &stepik.TransientError{Status: 0}
 	}
 	return c.refreshTeacher(ctx, sid, sess, now)
 }
