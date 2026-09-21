@@ -35,6 +35,7 @@ func testStore(t *testing.T) *sessions.Store {
 func testChecker(store *sessions.Store) *Checker {
 	return &Checker{
 		Cfg: config.Config{
+			Origin:          config.DefaultOrigin,
 			GateToken:       "gate-token",
 			RemarkJWTSecret: "remark-secret",
 			Site:            "stepik-discuss",
@@ -146,6 +147,42 @@ func TestExtractCID_matrix(t *testing.T) {
 				t.Errorf("ExtractCID = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestExtractCIDWithBase_customOrigin(t *testing.T) {
+	cfg := config.Config{Origin: "https://custom.example"}
+	base := cfg.ClassBase()
+	if base != "https://custom.example/class/" {
+		t.Fatalf("ClassBase = %q, want custom base", base)
+	}
+	pageURL := base + "82866"
+	fwd := "/discuss/api/v1/comments?url=" + urlQueryEscape(pageURL)
+	got, err := ExtractCIDWithBase(fwd, "", base)
+	if err != nil {
+		t.Fatalf("ExtractCIDWithBase error: %v", err)
+	}
+	if got != 82866 {
+		t.Fatalf("ExtractCIDWithBase = %d, want 82866", got)
+	}
+	if _, err := ExtractCIDWithBase(fwd, "", config.ClassBaseURL); err == nil {
+		t.Fatal("default base must reject custom-origin pageURL")
+	}
+}
+
+func TestCheck_customOriginAcceptsOwnBase(t *testing.T) {
+	store := testStore(t)
+	putSession(t, store, "sid-custom", &sessions.SessionRecord{
+		StepikUserID: 1190530325, AllowedClassIDs: []int64{82866},
+	})
+	c := testChecker(store)
+	c.Cfg.Origin = "https://custom.example"
+	pageURL := c.Cfg.ClassBase() + "82866"
+	fwd := "/discuss/api/v1/comments?url=" + urlQueryEscape(pageURL)
+	w := httptest.NewRecorder()
+	c.ServeHTTP(w, checkReq("127.0.0.1:1", fwd, "sid-custom"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for custom-origin pageURL: %s", w.Code, w.Body.String())
 	}
 }
 

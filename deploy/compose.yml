@@ -77,8 +77,9 @@ services:
       SITE: ${SITE:-stepik-discuss}
       REMARK_URL: ${REMARK_URL:-https://stepik.study67.fyi/discuss}
       AUTH_ANON: "false"
-      # Must match TEACHER_ID (gate AdminSharedID is stepik_<TEACHER_ID>); override both together.
-      ADMIN_SHARED_ID: ${ADMIN_SHARED_ID:-stepik_1182644732}
+      # Single-sourced from TEACHER_ID (gate AdminSharedID is stepik_<TEACHER_ID>);
+      # explicit ADMIN_SHARED_ID still wins when set.
+      ADMIN_SHARED_ID: ${ADMIN_SHARED_ID:-stepik_${TEACHER_ID:-1182644732}}
       AUTH_TTL_JWT: 5m
       AVATAR_PROXY: "true"
       MAX_COMMENT_SIZE: "2000"

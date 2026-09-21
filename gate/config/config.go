@@ -101,6 +101,15 @@ func Load() (Config, error) {
 	c.Site = getenv("SITE", DefaultSite)
 	c.RemarkURL = getenv("REMARK_URL", DefaultRemarkURL)
 	c.Origin = getenv("GATE_ORIGIN", DefaultOrigin)
+	if strings.TrimSpace(c.Origin) == "" {
+		return Config{}, errors.New("GATE_ORIGIN must be an absolute URL")
+	}
+	if u, err := url.Parse(c.Origin); err != nil || u.Scheme == "" || u.Host == "" {
+		return Config{}, errors.New("GATE_ORIGIN must be an absolute URL")
+	}
+	if c.ClassBase() == "" {
+		return Config{}, errors.New("GATE_ORIGIN must be an absolute URL")
+	}
 	c.DBPath = getenv("GATE_DB_PATH", "/data/gate.db")
 	return c, nil
 }
@@ -117,8 +126,8 @@ func parseDuration(key, fallback string) (time.Duration, error) {
 }
 
 // ClassBase returns the canonical class page base derived from Origin.
-// Single source for page URLs parsed by ExtractCID note: ExtractCID still
-// matches against the ClassBaseURL const to limit blast radius in this MR.
+// Single source for page URLs rendered by handlers and parsed by
+// auth.ExtractCIDWithBase; the ClassBaseURL const remains the default only.
 func (c Config) ClassBase() string {
 	return strings.TrimSuffix(c.Origin, "/") + "/class/"
 }
@@ -127,8 +136,8 @@ func (c Config) ClassBase() string {
 // required by templates as {{.EmbedHost}}/web/embed.js). Falls back to
 // DefaultRemarkURL when RemarkURL is unset or unparsable. Query and fragment
 // are stripped; trailing slash is trimmed.
-// Note: ExtractCID still matches against the ClassBaseURL const, not
-// ClassBase() below, to limit blast radius in this MR.
+// Note: auth.ExtractCIDWithBase matches against ClassBase() above; the
+// iframe unwrap keeps the DefaultRemarkURL const (remark URL rarely custom).
 func (c Config) EmbedHost() string {
 	raw := c.RemarkURL
 	if raw == "" {

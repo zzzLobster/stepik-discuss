@@ -104,6 +104,13 @@ func SlideSession(store *sessions.Store, sid string, sess *sessions.SessionRecor
 }
 
 func ExtractCID(forwardedURI, referer string) (int64, error) {
+	return ExtractCIDWithBase(forwardedURI, referer, config.ClassBaseURL)
+}
+
+func ExtractCIDWithBase(forwardedURI, referer, base string) (int64, error) {
+	if base == "" {
+		base = config.ClassBaseURL
+	}
 	raw := ""
 	if forwardedURI != "" {
 		if u, err := url.Parse(forwardedURI); err == nil {
@@ -121,10 +128,10 @@ func ExtractCID(forwardedURI, referer string) (int64, error) {
 		return 0, ErrUnknownThread
 	}
 	trimmed := strings.TrimSuffix(raw, "/")
-	if !strings.HasPrefix(trimmed, config.ClassBaseURL) {
+	if !strings.HasPrefix(trimmed, base) {
 		return 0, ErrUnknownThread
 	}
-	rest := strings.TrimPrefix(trimmed, config.ClassBaseURL)
+	rest := strings.TrimPrefix(trimmed, base)
 	if !cidPattern.MatchString(rest) {
 		return 0, ErrUnknownThread
 	}
@@ -136,6 +143,8 @@ func ExtractCID(forwardedURI, referer string) (int64, error) {
 }
 
 func unwrapIframeURL(raw string) string {
+	// Remark URL is rarely custom, so the DefaultRemarkURL const stays the
+	// iframe prefix here; only the class base is param-driven (ExtractCIDWithBase).
 	if raw == "" {
 		return raw
 	}
@@ -1190,7 +1199,7 @@ func (c *Checker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	referer := r.Header.Get("Referer")
-	cid, err := ExtractCID(fwdURI, referer)
+	cid, err := ExtractCIDWithBase(fwdURI, referer, c.Cfg.ClassBase())
 	if err != nil {
 		hasURL := false
 		if u, perr := url.Parse(fwdURI); perr == nil {
