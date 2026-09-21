@@ -169,14 +169,15 @@ func Guard(r *http.Request, expected string) bool {
 func verifyJitter(sid string) time.Duration {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(sid))
-	span := int64(30 * time.Minute)
-	return time.Duration(int64(h.Sum32())%span) - 15*time.Minute
+	const spanSec = int64(30 * 60)
+	return time.Duration(int64(h.Sum32())%spanSec)*time.Second - 15*time.Minute
 }
 
 func retryJitter(sid string) time.Duration {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte("retry" + sid))
-	return time.Duration(int64(h.Sum32()) % int64(5*time.Minute))
+	const spanSec = int64(5 * 60)
+	return time.Duration(int64(h.Sum32())%spanSec) * time.Second
 }
 
 type Checker struct {
@@ -997,6 +998,15 @@ func (c *Checker) refreshStudent(ctx context.Context, sid string, sess *sessions
 	verify(plain)
 	renewed := false
 	if verr != nil {
+		if stepik.IsTeacherFallback(verr) {
+			var tfe *stepik.TeacherFallbackError
+			status := -1
+			if errors.As(verr, &tfe) {
+				status = tfe.Status
+			}
+			c.Log.Warn("student recheck teacher fallback dead", "uid", sess.StepikUserID, "auth_path", path, "status", status)
+			return c.staleOrFresh(ctx, sid, sess, now, verr)
+		}
 		if !stepik.IsUnauthorized(verr) {
 			c.Log.Warn("student recheck transient", "uid", sess.StepikUserID, "auth_path", path)
 			return c.staleOrFresh(ctx, sid, sess, now, verr)
@@ -1015,6 +1025,15 @@ func (c *Checker) refreshStudent(ctx context.Context, sid string, sess *sessions
 		}
 		verify(plain)
 		if verr != nil {
+			if stepik.IsTeacherFallback(verr) {
+				var tfe *stepik.TeacherFallbackError
+				status := -1
+				if errors.As(verr, &tfe) {
+					status = tfe.Status
+				}
+				c.Log.Warn("student recheck teacher fallback dead", "uid", sess.StepikUserID, "auth_path", path, "status", status)
+				return c.staleOrFresh(ctx, sid, sess, now, verr)
+			}
 			if !stepik.IsUnauthorized(verr) {
 				c.Log.Warn("student recheck transient", "uid", sess.StepikUserID, "auth_path", path)
 				return c.staleOrFresh(ctx, sid, sess, now, verr)
@@ -1035,6 +1054,15 @@ func (c *Checker) refreshStudent(ctx context.Context, sid string, sess *sessions
 				c.reloadSessionInPlace(sid, sess)
 				verify(plain)
 				if verr != nil {
+					if stepik.IsTeacherFallback(verr) {
+						var tfe *stepik.TeacherFallbackError
+						status := -1
+						if errors.As(verr, &tfe) {
+							status = tfe.Status
+						}
+						c.Log.Warn("student recheck teacher fallback dead", "uid", sess.StepikUserID, "auth_path", path, "status", status)
+						return c.staleOrFresh(ctx, sid, sess, now, verr)
+					}
 					if !stepik.IsUnauthorized(verr) {
 						c.Log.Warn("student recheck transient", "uid", sess.StepikUserID, "auth_path", path)
 						return c.staleOrFresh(ctx, sid, sess, now, verr)

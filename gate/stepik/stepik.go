@@ -73,6 +73,28 @@ func IsUnauthorized(err error) bool {
 	return errors.As(err, &ue)
 }
 
+type TeacherFallbackError struct {
+	Status int
+	Err    error
+}
+
+// IsTeacherFallback must be checked before IsUnauthorized; deliberately does
+// not Unwrap to inner Unauthorized to avoid misclassification.
+func (e *TeacherFallbackError) Error() string {
+	if e == nil {
+		return "stepik teacher fallback status=unknown"
+	}
+	if e.Err == nil {
+		return "stepik teacher fallback status=" + strconv.Itoa(e.Status)
+	}
+	return "stepik teacher fallback status=" + strconv.Itoa(e.Status) + ": " + e.Err.Error()
+}
+
+func IsTeacherFallback(err error) bool {
+	var te *TeacherFallbackError
+	return errors.As(err, &te)
+}
+
 var ErrEmptyStepics = errors.New("stepics empty")
 
 type Client struct {
@@ -261,7 +283,7 @@ func (c *Client) get(ctx context.Context, token, path string, query url.Values, 
 			last = &TransientError{Status: resp.StatusCode, After: after}
 			continue
 		}
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		if resp.StatusCode == http.StatusUnauthorized {
 			return &UnauthorizedError{Status: resp.StatusCode}
 		}
 		if resp.StatusCode != http.StatusOK {
@@ -458,6 +480,12 @@ func VerifyStudent(ctx context.Context, c *Client, userToken, teacherToken strin
 	if ferr != nil {
 		if IsTransient(ferr) {
 			return nil, "transient", ferr
+		}
+		// Direct errors.As (not IsUnauthorized helper) is for Status extraction.
+		var ue *UnauthorizedError
+		if errors.As(ferr, &ue) {
+			c.log.Warn("stepik teacher fallback", "uid", uid, "status", ue.Status, "auth_path", "A-teacher-fallback")
+			return nil, "A-teacher-fallback", &TeacherFallbackError{Status: ue.Status, Err: ferr}
 		}
 		return nil, "deny", ferr
 	}
