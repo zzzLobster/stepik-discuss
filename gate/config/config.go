@@ -136,8 +136,8 @@ func (c Config) ClassBase() string {
 // required by templates as {{.EmbedHost}}/web/embed.js). Falls back to
 // DefaultRemarkURL when RemarkURL is unset or unparsable. Query and fragment
 // are stripped; trailing slash is trimmed.
-// Note: auth.ExtractCIDWithBase matches against ClassBase() above; the
-// iframe unwrap keeps the DefaultRemarkURL const (remark URL rarely custom).
+// Note: auth.ExtractCIDWithConfig matches against ClassBase() above; the
+// iframe unwrap uses EmbedHost() so custom REMARK_URL values are honored.
 func (c Config) EmbedHost() string {
 	raw := c.RemarkURL
 	if raw == "" {

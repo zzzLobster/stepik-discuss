@@ -132,9 +132,24 @@ func (s *Server) resolveHTMLSession(w http.ResponseWriter, r *http.Request, cid 
 		}
 		stale = fstale
 	}
-	if auth.SlideSession(s.store, sid, sess, time.Now()) {
+	now := time.Now()
+	if auth.SlideSession(s.store, sid, sess, now, s.log) {
 		sessions.SetSID(w, sid)
 	}
+	if sess.CSRFToken == "" {
+		tok, err := sessions.NewCSRFToken()
+		if err != nil {
+			s.renderHTMLTransient(w)
+			return sess, sid, stale, htmlOutcomeTransient, "csrf_gen", true
+		}
+		sess.CSRFToken = tok
+		if err := s.store.PutSession(sid, sess); err != nil {
+			s.log.Error("csrf backfill failed", "uid", sess.StepikUserID, "err", err)
+			s.renderHTMLTransient(w)
+			return sess, sid, stale, htmlOutcomeTransient, "csrf_persist", true
+		}
+	}
+	sessions.SetCSRF(w, sess.CSRFToken)
 	if checkAllowed && !auth.Allowed(sess, cid) {
 		reason = "left"
 		if len(sess.AllowedClassIDs) == 0 && !sess.IsTeacher {

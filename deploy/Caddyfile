@@ -15,17 +15,18 @@ stepik.study67.fyi {
 		format json
 	}
 
-	# Edge (Cloudflare orange-cloud -> Caddy -> gate): preserve inbound
-	# CF-Connecting-IP from Cloudflare (real client); only set from edge
-	# socket when missing (direct origin / healthchecks).
-	# trusted_proxies = Cloudflare ranges + docker private_ranges, set in
-	# the global block above (plan §5.3).
-	# Spoof tradeoff: direct-to-origin can forge CF-Connecting-IP (gate trusts
-	# docker-private peer), so lock origin firewall to Cloudflare ranges;
+	# Edge (Cloudflare orange-cloud -> Caddy -> gate): Caddy overwrites
+	# CF-Connecting-IP with the trusted restored client IP ({client_ip}).
+	# With trusted_proxies set to Cloudflare ranges + docker private_ranges
+	# (global block above, plan §5.3), Caddy parses X-Forwarded-For from
+	# Cloudflare and restores the real client IP; for non-trusted sources
+	# {client_ip} falls back to the direct TCP peer. Combined with stripping
+	# X-Forwarded-For below, the Gate sees only Caddy's authoritative client
+	# IP, so per-IP rate limits cannot be bypassed.
+	# Defence in depth: still lock origin firewall to Cloudflare ranges;
 	# ufw: allow 22,80,443 only (80/443 preferably Cloudflare-only).
 	request_header -X-Forwarded-For
-	@noCF header !CF-Connecting-IP
-	request_header @noCF CF-Connecting-IP {http.request.remote.host}
+	request_header CF-Connecting-IP {client_ip}
 
 	# Referer needs full path same-origin for Gate cid fallback on /discuss/web/* without ?url=;
 	# cross-origin stays origin-only.

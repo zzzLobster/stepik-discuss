@@ -66,8 +66,13 @@ func (a *Admin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
-	path := path.Clean(r.URL.Path)
-	switch path {
+	if !sessions.VerifyHeaderCSRF(r) {
+		a.Log.Warn("admin csrf mismatch", "uid", sess.StepikUserID)
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	cleaned := path.Clean(r.URL.Path)
+	switch cleaned {
 	case "/auth/admin/logout-all":
 		a.logoutAll(w, r, sess)
 	case "/auth/admin/revoke-user":

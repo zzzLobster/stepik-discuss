@@ -93,13 +93,20 @@ func SlidingNeeded(sess *sessions.SessionRecord, now time.Time) bool {
 	return now.After(sess.ExpiresAt.Add(-29 * 24 * time.Hour))
 }
 
-func SlideSession(store *sessions.Store, sid string, sess *sessions.SessionRecord, now time.Time) bool {
+// SlideSession extends the session lifetime when it is within the sliding
+// window. It returns true only when the updated record was successfully
+// persisted; the in-memory record is still mutated (ExpiresAt/LastSeenAt) even
+// when persistence fails, so callers can keep using the current request's copy.
+func SlideSession(store *sessions.Store, sid string, sess *sessions.SessionRecord, now time.Time, log *slog.Logger) bool {
 	if !SlidingNeeded(sess, now) {
 		return false
 	}
 	sess.ExpiresAt = now.Add(30 * 24 * time.Hour)
 	sess.LastSeenAt = now
-	_ = store.PutSession(sid, sess)
+	if err := store.PutSession(sid, sess); err != nil {
+		log.Error("session slide failed", "uid", sess.StepikUserID, "err", err)
+		return false
+	}
 	return true
 }
 
@@ -108,8 +115,15 @@ func ExtractCID(forwardedURI, referer string) (int64, error) {
 }
 
 func ExtractCIDWithBase(forwardedURI, referer, base string) (int64, error) {
+	return ExtractCIDWithConfig(forwardedURI, referer, base, config.DefaultRemarkURL)
+}
+
+func ExtractCIDWithConfig(forwardedURI, referer, base, embedHost string) (int64, error) {
 	if base == "" {
 		base = config.ClassBaseURL
+	}
+	if embedHost == "" {
+		embedHost = config.DefaultRemarkURL
 	}
 	raw := ""
 	if forwardedURI != "" {
@@ -123,7 +137,7 @@ func ExtractCIDWithBase(forwardedURI, referer, base string) (int64, error) {
 	if raw == "" {
 		return 0, ErrUnknownThread
 	}
-	raw = unwrapIframeURL(raw)
+	raw = unwrapIframeURL(raw, embedHost)
 	if strings.Contains(strings.ToLower(raw), "%25") {
 		return 0, ErrUnknownThread
 	}
@@ -142,13 +156,15 @@ func ExtractCIDWithBase(forwardedURI, referer, base string) (int64, error) {
 	return cid, nil
 }
 
-func unwrapIframeURL(raw string) string {
-	// Remark URL is rarely custom, so the DefaultRemarkURL const stays the
-	// iframe prefix here; only the class base is param-driven (ExtractCIDWithBase).
+func unwrapIframeURL(raw, embedHost string) string {
 	if raw == "" {
 		return raw
 	}
-	isIframe := strings.HasPrefix(raw, config.DefaultRemarkURL+"/web/iframe.html")
+	if embedHost == "" {
+		embedHost = config.DefaultRemarkURL
+	}
+	iframePrefix := strings.TrimSuffix(embedHost, "/") + "/web/iframe.html"
+	isIframe := strings.HasPrefix(raw, iframePrefix)
 	if !isIframe && !strings.Contains(raw, "?url=") && !strings.Contains(raw, "&url=") {
 		return raw
 	}
@@ -864,10 +880,14 @@ func (c *Checker) putTeacherTokenFenced(snap *sessions.TeacherToken, sessTokenOb
 // callback always wins with no ObtainedAt fence, so a mid-window renewal
 // result can neither overwrite nor wipe a fresh login. Session records need
 // no equivalent: each login mints a fresh SID, never a shared key.
-func (c *Checker) SeedTeacherToken(tok *sessions.TeacherToken) {
+func (c *Checker) SeedTeacherToken(tok *sessions.TeacherToken) error {
 	unlock := c.renewMu.lock("teacher:current")
 	defer unlock()
-	_ = c.Store.PutTeacherToken(tok)
+	if err := c.putTeacherToken(tok); err != nil {
+		c.Log.Error("seed teacher token failed", "uid", tok.OwnerUID, "err", err)
+		return err
+	}
+	return nil
 }
 
 func (c *Checker) refreshTeacher(ctx context.Context, sid string, sess *sessions.SessionRecord, now time.Time) (bool, error) {
@@ -1160,8 +1180,13 @@ func (c *Checker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	sess, sid, err := LoadSession(c.Store, r)
 	if err != nil {
-		c.Log.Info("check deny", "uid", 0, "cid", 0, "owner", 0, "auth_path", "deny", "latency_ms", time.Since(start).Milliseconds(), "cf_ray", cfRay)
-		c.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": codeAuthRequired})
+		if errors.Is(err, ErrNoSession) || errors.Is(err, ErrExpired) {
+			c.Log.Info("check deny", "uid", 0, "cid", 0, "owner", 0, "auth_path", "deny", "latency_ms", time.Since(start).Milliseconds(), "cf_ray", cfRay)
+			c.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": codeAuthRequired})
+			return
+		}
+		c.Log.Error("load session failed", "cf_ray", cfRay, "err", err)
+		c.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": codeTransient})
 		return
 	}
 	uid := sess.StepikUserID
@@ -1194,12 +1219,12 @@ func (c *Checker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			deny(http.StatusServiceUnavailable, codeTransient, 0, "transient")
 			return
 		}
-		SlideSession(c.Store, sid, sess, time.Now())
+		SlideSession(c.Store, sid, sess, time.Now(), c.Log)
 		c.mint(w, r, sess, 0, stale, start, cfRay)
 		return
 	}
 	referer := r.Header.Get("Referer")
-	cid, err := ExtractCIDWithBase(fwdURI, referer, c.Cfg.ClassBase())
+	cid, err := ExtractCIDWithConfig(fwdURI, referer, c.Cfg.ClassBase(), c.Cfg.EmbedHost())
 	if err != nil {
 		hasURL := false
 		if u, perr := url.Parse(fwdURI); perr == nil {
@@ -1222,7 +1247,7 @@ func (c *Checker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		deny(http.StatusForbidden, codeForbidden, cid, "deny")
 		return
 	}
-	SlideSession(c.Store, sid, sess, time.Now())
+	SlideSession(c.Store, sid, sess, time.Now(), c.Log)
 	c.mint(w, r, sess, cid, stale, start, cfRay)
 }
 

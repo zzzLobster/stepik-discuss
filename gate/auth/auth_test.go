@@ -186,6 +186,51 @@ func TestCheck_customOriginAcceptsOwnBase(t *testing.T) {
 	}
 }
 
+func TestExtractCIDWithConfig_customRemarkURL(t *testing.T) {
+	cfg := config.Config{Origin: config.DefaultOrigin, RemarkURL: "https://custom.example/discuss"}
+	base := cfg.ClassBase()
+	embedHost := cfg.EmbedHost()
+	if embedHost != "https://custom.example/discuss" {
+		t.Fatalf("EmbedHost = %q, want custom remark host", embedHost)
+	}
+
+	pageURL := base + "82866"
+	iframeURL := embedHost + "/web/iframe.html?url=" + urlQueryEscape(pageURL)
+
+	got, err := ExtractCIDWithConfig("/discuss/api/v1/config?site=stepik-discuss", iframeURL, base, embedHost)
+	if err != nil {
+		t.Fatalf("ExtractCIDWithConfig error: %v", err)
+	}
+	if got != 82866 {
+		t.Fatalf("ExtractCIDWithConfig = %d, want 82866", got)
+	}
+
+	// Sanity check: the default helper still unwraps the standard iframe URL.
+	defaultIframeURL := config.DefaultRemarkURL + "/web/iframe.html?url=" + urlQueryEscape(pageURL)
+	if _, err := ExtractCID("/discuss/api/v1/config?site=stepik-discuss", defaultIframeURL); err != nil {
+		t.Fatalf("default ExtractCID must accept default-remark iframe referer: %v", err)
+	}
+}
+
+func TestCheck_customRemarkURLAcceptsIframeReferer(t *testing.T) {
+	store := testStore(t)
+	putSession(t, store, "sid-custom-remark", &sessions.SessionRecord{
+		StepikUserID: 1190530325, AllowedClassIDs: []int64{82866},
+	})
+	c := testChecker(store)
+	c.Cfg.RemarkURL = "https://custom.example/discuss"
+	pageURL := c.Cfg.ClassBase() + "82866"
+	referer := c.Cfg.EmbedHost() + "/web/iframe.html?url=" + urlQueryEscape(pageURL)
+	fwd := "/discuss/api/v1/config?site=stepik-discuss"
+	w := httptest.NewRecorder()
+	r := checkReq("127.0.0.1:1", fwd, "sid-custom-remark")
+	r.Header.Set("Referer", referer)
+	c.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for custom-remark iframe referer: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestGuard_matrix(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -435,5 +480,59 @@ func TestCheck_transient503_noNetwork(t *testing.T) {
 	}
 	if decodeBody(t, w)["error"] != "transient" {
 		t.Errorf("error = %v, want transient", decodeBody(t, w)["error"])
+	}
+}
+
+func TestCheck_transient503_loadSession(t *testing.T) {
+	store := testStore(t)
+	putSession(t, store, "sid-db", &sessions.SessionRecord{
+		StepikUserID:    1,
+		AllowedClassIDs: []int64{82866},
+	})
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	c := testChecker(store)
+	w := httptest.NewRecorder()
+	c.ServeHTTP(w, checkReq("127.0.0.1:1", fwdFor("82866"), "sid-db"))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: %s", w.Code, w.Body.String())
+	}
+	if decodeBody(t, w)["error"] != "transient" {
+		t.Errorf("error = %v, want transient", decodeBody(t, w)["error"])
+	}
+}
+
+func TestSlideSession_putFailure(t *testing.T) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatal(err)
+	}
+	store, err := sessions.Open(filepath.Join(t.TempDir(), "gate.db"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	rec := &sessions.SessionRecord{
+		StepikUserID: 1,
+		ExpiresAt:    now.Add(28 * 24 * time.Hour),
+		LastSeenAt:   now.Add(-time.Hour),
+	}
+	putSession(t, store, "sid-put-fail", rec)
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	oldExpires := rec.ExpiresAt
+	oldSeen := rec.LastSeenAt
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if got := SlideSession(store, "sid-put-fail", rec, now, log); got {
+		t.Error("SlideSession on PutSession failure must return false")
+	}
+	if rec.ExpiresAt.Equal(oldExpires) {
+		t.Error("ExpiresAt must be updated in memory even when persist fails")
+	}
+	if rec.LastSeenAt.Equal(oldSeen) {
+		t.Error("LastSeenAt must be updated in memory even when persist fails")
 	}
 }

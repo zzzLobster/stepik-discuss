@@ -292,3 +292,42 @@ func TestListPages_paginates(t *testing.T) {
 		t.Errorf("classes = %+v, want 2 pages merged", classes)
 	}
 }
+
+func TestExchangeCode_usesInjectedHTTPClient(t *testing.T) {
+	called := false
+	c := testClient(t, func(r *http.Request) (*http.Response, error) {
+		called = true
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %q, want POST", r.Method)
+		}
+		return jsonResp(200, map[string]any{
+			"access_token": "a1",
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+		}), nil
+	})
+	access, _, _, err := c.ExchangeCode(context.Background(), "id", "secret", "https://x/cb", "code1")
+	if err != nil {
+		t.Fatalf("ExchangeCode = %v", err)
+	}
+	if access != "a1" {
+		t.Errorf("access = %q, want a1", access)
+	}
+	if !called {
+		t.Errorf("injected HTTP client was not used")
+	}
+}
+
+func TestExchangeCode_nilContext(t *testing.T) {
+	c := testClient(t, func(r *http.Request) (*http.Response, error) {
+		return jsonResp(200, map[string]any{
+			"access_token": "a1",
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+		}), nil
+	})
+	_, _, _, err := c.ExchangeCode(nil, "id", "secret", "https://x/cb", "code1")
+	if err != nil {
+		t.Fatalf("ExchangeCode(nil) = %v", err)
+	}
+}

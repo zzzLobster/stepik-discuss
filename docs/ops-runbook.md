@@ -54,6 +54,7 @@ handle /discuss/* {
 }
 ```
 - Direct edge: full list above. Tunnel-only: `private_ranges` is enough (edge → `127.0.0.6` via `cloudflared`).
+- Caddy overwrites `CF-Connecting-IP` with the trusted restored client IP `{client_ip}` on every request (and strips `X-Forwarded-For`). `{client_ip}` comes from `trusted_proxies` parsing `X-Forwarded-For` for Cloudflare traffic and falls back to the direct TCP peer for non-trusted sources, so direct-to-origin traffic cannot forge the client IP seen by the Gate.
 - Validate via container (no local binary needed) — see §3.
 
 ### 2.5 Tunnel `308` loop

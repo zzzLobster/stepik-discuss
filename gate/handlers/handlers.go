@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -98,10 +99,16 @@ func (s *Server) privateHeaders(w http.ResponseWriter) {
 }
 
 func (s *Server) render(w http.ResponseWriter, status int, name string, data any) {
+	var buf bytes.Buffer
+	if err := s.tpl.ExecuteTemplate(&buf, name, data); err != nil {
+		s.log.Error("template render failed", "template", name, "status", status, "error", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
 	s.privateHeaders(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	_ = s.tpl.ExecuteTemplate(w, name, data)
+	_, _ = w.Write(buf.Bytes())
 }
 
 type statusRecorder struct {
@@ -160,6 +167,7 @@ type indexData struct {
 	StaleBanner   string
 	Consent       string
 	LoginButton   string
+	CSRFToken     string
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -200,6 +208,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	data.LoggedIn = true
 	data.FIO = sess.FIO
 	data.IsTeacher = sess.IsTeacher
+	data.CSRFToken = sess.CSRFToken
 	for _, cid := range sess.AllowedClassIDs {
 		title := sess.ClassTitles[strconv.FormatInt(cid, 10)]
 		if title == "" {
@@ -449,6 +458,11 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, http.StatusInternalServerError, RUTransient)
 		return
 	}
+	csrf, err := sessions.NewCSRFToken()
+	if err != nil {
+		s.renderError(w, http.StatusInternalServerError, RUTransient)
+		return
+	}
 	sess := &sessions.SessionRecord{
 		StepikUserID:      uid,
 		FIO:               fio,
@@ -459,6 +473,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		LastSeenAt:        now,
 		UserVersion:       uv,
 		GlobalEpoch:       epoch,
+		CSRFToken:         csrf,
 		TokenCiphertext:   ct,
 		TokenNonce:        nonce,
 		TokenObtainedAt:   now,
@@ -470,7 +485,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	var authPath string
 	if uid == s.cfg.TeacherID {
 		sess.IsTeacher = true
-		s.checker.SeedTeacherToken(&sessions.TeacherToken{
+		if err := s.checker.SeedTeacherToken(&sessions.TeacherToken{
 			Ciphertext:        ct,
 			Nonce:             nonce,
 			ObtainedAt:        now,
@@ -479,7 +494,10 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 			RefreshCiphertext: refreshCT,
 			RefreshNonce:      refreshNonce,
 			RefreshObtainedAt: refreshObtained,
-		})
+		}); err != nil {
+			s.renderError(w, http.StatusInternalServerError, RUTransient)
+			return
+		}
 		classes, lerr := s.step.ListOwned(ctx, access)
 		if lerr != nil {
 			if stepik.IsTransient(lerr) {
@@ -523,6 +541,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("login allow", "uid", uid, "auth_path", authPath, "latency_ms", time.Since(start).Milliseconds(), "cf_ray", cfRay)
 	sessions.SetSID(w, sid)
+	sessions.SetCSRF(w, csrf)
 	sessions.ClearBinder(w)
 	http.Redirect(w, r, next, http.StatusFound)
 }
@@ -540,10 +559,15 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
+	if !sessions.VerifyFormCSRF(r) {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
 	if c, err := r.Cookie(sessions.CookieSID); err == nil {
 		_ = s.store.DeleteSession(c.Value)
 	}
 	sessions.ClearSID(w)
+	sessions.ClearCSRF(w)
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -574,7 +598,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = stale
-	if auth.SlideSession(s.store, sid, sess, time.Now()) {
+	if auth.SlideSession(s.store, sid, sess, time.Now(), s.log) {
 		sessions.SetSID(w, sid)
 	}
 	w.Header().Set("Content-Type", "application/json")

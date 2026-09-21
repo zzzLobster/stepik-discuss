@@ -86,17 +86,25 @@ func main() {
 	}
 	srv := handlers.New(cfg, store, step, limits, checker, adm, log, tpl, staticFS)
 
-	httpSrv := &http.Server{
-		Addr:              ":8081",
-		Handler:           srv.Routes(),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
+	httpSrv := newHTTPServer(":8081", srv.Routes())
 	log.Info("gate listening", "addr", ":8081", "placeholder", cfg.Placeholder, "revision", buildRevision())
 	if err := httpSrv.ListenAndServe(); err != nil {
 		log.Error("gate stopped", "err", err)
 		os.Exit(1)
+	}
+}
+
+// newHTTPServer returns the production HTTP server config. MaxHeaderBytes is
+// capped at 64 KB: the Go default of 1 MiB is larger than necessary for the
+// gate and increases memory pressure under header-based DoS.
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 * 1024, // 64 KB
 	}
 }

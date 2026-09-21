@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -33,9 +34,11 @@ var ErrCorrupt = errors.New("session corrupt")
 const (
 	CookieSID    = "__Host-sid"
 	CookieBinder = "__Host-oa"
+	CookieCSRF   = "__Host-csrf"
 
 	SIDMaxAgeSeconds    = 2592000
 	BinderMaxAgeSeconds = 600
+	CSRFMaxAgeSeconds   = SIDMaxAgeSeconds
 )
 
 type SessionRecord struct {
@@ -56,6 +59,10 @@ type SessionRecord struct {
 	TokenNonce      []byte            `json:"token_nonce"`
 	TokenObtainedAt time.Time         `json:"token_obtained_at"`
 	TokenExpiresAt  time.Time         `json:"token_expires_at"`
+	// CSRFToken is the double-submit cookie value for this session. It is
+	// additive: pre-feature rows unmarshal with an empty value and are
+	// backfilled when next used by an HTML route.
+	CSRFToken string `json:"csrf_token,omitempty"`
 	// Refresh fields are additive: pre-feature rows unmarshal with nil/zero
 	// values and follow the legacy no-renewal path. Same AES-GCM key as the
 	// access token, separate nonces. No refresh-expiry field is stored.
@@ -232,6 +239,69 @@ func ClearBinder(w http.ResponseWriter) {
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 	})
+}
+
+func NewCSRFToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func SetCSRF(w http.ResponseWriter, v string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     CookieCSRF,
+		Value:    v,
+		Path:     "/",
+		MaxAge:   CSRFMaxAgeSeconds,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func ClearCSRF(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     CookieCSRF,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func csrfCookie(r *http.Request) string {
+	c, err := r.Cookie(CookieCSRF)
+	if err != nil {
+		return ""
+	}
+	return c.Value
+}
+
+func verifyCSRF(r *http.Request, got string) bool {
+	want := csrfCookie(r)
+	if want == "" || got == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1
+}
+
+// VerifyFormCSRF checks that the request's csrf_token form field matches the
+// __Host-csrf cookie using a constant-time comparison. The token is read only
+// from the POST body, never from the URL query string, to avoid leaking it via
+// Referer headers or browser history.
+func VerifyFormCSRF(r *http.Request) bool {
+	if err := r.ParseForm(); err != nil {
+		return false
+	}
+	return verifyCSRF(r, r.PostFormValue("csrf_token"))
+}
+
+// VerifyHeaderCSRF checks that the request's X-CSRF-Token header matches the
+// __Host-csrf cookie using a constant-time comparison.
+func VerifyHeaderCSRF(r *http.Request) bool {
+	return verifyCSRF(r, r.Header.Get("X-CSRF-Token"))
 }
 
 func (s *Store) TeacherTokenPlain(teacherID int64) (string, bool) {

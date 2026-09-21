@@ -108,13 +108,29 @@ type Client struct {
 	TokenURL string
 }
 
-func New(teacherID int64, log *slog.Logger) *Client {
-	return &Client{
-		http:      &http.Client{Timeout: 15 * time.Second},
+// ClientOption customises a Client created by New.
+type ClientOption func(*Client)
+
+// WithHTTPClient returns a ClientOption that replaces the underlying HTTP
+// client. It is intended for tests that need to mock Stepik API responses.
+func WithHTTPClient(hc *http.Client) ClientOption {
+	return func(c *Client) { c.http = hc }
+}
+
+func New(teacherID int64, log *slog.Logger, opts ...ClientOption) *Client {
+	c := &Client{
+		http: &http.Client{
+			Timeout:   15 * time.Second,
+			Transport: http.DefaultTransport,
+		},
 		out:       rate.NewLimiter(4, 8),
 		teacherID: teacherID,
 		log:       log,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 func AuthCodeURL(clientID, redirect, state string) string {
@@ -135,6 +151,12 @@ func (c *Client) tokenURL() string {
 }
 
 func (c *Client) ExchangeCode(ctx context.Context, clientID, secret, redirect, code string) (access, refresh string, expires time.Time, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := c.out.Wait(ctx); err != nil {
+		return "", "", time.Time{}, err
+	}
 	conf := &oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: secret,
@@ -142,6 +164,7 @@ func (c *Client) ExchangeCode(ctx context.Context, clientID, secret, redirect, c
 		Scopes:       []string{"read"},
 		Endpoint:     oauth2.Endpoint{AuthURL: AuthorizeURL, TokenURL: c.tokenURL()},
 	}
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, c.http)
 	tok, err := conf.Exchange(ctx, code)
 	if err != nil {
 		return "", "", time.Time{}, err

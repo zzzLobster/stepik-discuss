@@ -34,10 +34,13 @@ func NewStore() *Store {
 
 // trustedPeer reports whether r arrived via local/docker-private proxy (Caddy).
 // Gate trusts CF-Connecting-IP only from such peers (see ClientIP).
-// Spoof tradeoff: direct-to-origin can forge CF-Connecting-IP, so lock origin
-// firewall to Cloudflare ranges (ufw: 22,80,443); plan §5.3 trusted_proxies
-// = Cloudflare ranges only. Deploy Caddy preserves inbound CF-Connecting-IP
-// and sets it from socket only when missing.
+// Defence in depth: Caddy overwrites CF-Connecting-IP with the trusted
+// restored client IP ({client_ip}), which comes from trusted_proxies parsing
+// X-Forwarded-For for Cloudflare traffic and falls back to the direct TCP
+// peer for non-trusted sources, so a direct-to-origin attacker cannot forge
+// the header. Still lock the origin firewall to Cloudflare ranges
+// (ufw: 22,80,443); plan §5.3 trusted_proxies = Cloudflare ranges + docker
+// private_ranges.
 func trustedPeer(r *http.Request) bool {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

@@ -85,7 +85,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "mint expired:", err)
 		os.Exit(2)
 	}
-	tampered := studentJWT[:len(studentJWT)-1] + flipLast(studentJWT[len(studentJWT)-1:])
+	tampered := tamperPayload(studentJWT)
 
 	type verdict struct {
 		name   string
@@ -166,9 +166,22 @@ func main() {
 	fmt.Println("SPIKE VERDICT: JWT shape (b) works with stock remark42.")
 }
 
-func flipLast(s string) string {
-	if strings.HasSuffix(s, "a") {
-		return "b"
+// tamperPayload flips a character in the JWT payload segment so the signature
+// no longer matches the content. Flipping the last character of the token is
+// unreliable because it is often base64 padding ('=') and remains valid.
+func tamperPayload(signed string) string {
+	parts := strings.Split(signed, ".")
+	if len(parts) != 3 {
+		return signed
 	}
-	return "a"
+	payload := parts[1]
+	if len(payload) == 0 {
+		return signed
+	}
+	flip := "a"
+	if payload[0] == 'a' {
+		flip = "b"
+	}
+	parts[1] = flip + payload[1:]
+	return strings.Join(parts, ".")
 }

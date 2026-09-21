@@ -2,11 +2,13 @@ package handlers
 
 import (
 	"crypto/rand"
+	"errors"
 	"html/template"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,8 +92,33 @@ func putSess(t *testing.T, store *sessions.Store, sid string, rec *sessions.Sess
 	if rec.LastSeenAt.IsZero() {
 		rec.LastSeenAt = now
 	}
+	if rec.CSRFToken == "" {
+		tok, err := sessions.NewCSRFToken()
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec.CSRFToken = tok
+	}
 	if err := store.PutSession(sid, rec); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRender_templateErrorReturns500(t *testing.T) {
+	tpl := template.Must(template.New("error.html").Funcs(template.FuncMap{
+		"fail": func() (string, error) { return "", errors.New("forced template error") },
+	}).Parse(`{{ fail }}`))
+	s := &Server{tpl: tpl, log: testLogger()}
+	w := httptest.NewRecorder()
+	s.render(w, http.StatusBadRequest, "error.html", nil)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 on template error", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/plain; charset=utf-8", ct)
+	}
+	if !strings.Contains(w.Body.String(), "Internal Server Error") {
+		t.Errorf("body missing error text: %s", w.Body.String())
 	}
 }
 
@@ -660,9 +687,16 @@ func TestLogout_methodAndOrigin(t *testing.T) {
 func TestLogout_clearsSession(t *testing.T) {
 	s, store := testServer(t, baseCfg())
 	putSess(t, store, "sid-lo", &sessions.SessionRecord{StepikUserID: 3})
-	r := httptest.NewRequest("POST", "/auth/logout", nil)
+	rec, err := store.GetSession("sid-lo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{"csrf_token": {rec.CSRFToken}}
+	r := httptest.NewRequest("POST", "/auth/logout", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Set("Origin", "https://stepik.study67.fyi")
 	r.AddCookie(&http.Cookie{Name: sessions.CookieSID, Value: "sid-lo"})
+	r.AddCookie(&http.Cookie{Name: sessions.CookieCSRF, Value: rec.CSRFToken})
 	w := httptest.NewRecorder()
 	s.Routes().ServeHTTP(w, r)
 	if w.Code != http.StatusFound {
@@ -670,6 +704,77 @@ func TestLogout_clearsSession(t *testing.T) {
 	}
 	if got, _ := store.GetSession("sid-lo"); got != nil {
 		t.Error("session row survived logout")
+	}
+	csrfCleared := false
+	for _, c := range w.Result().Cookies() {
+		if c.Name == sessions.CookieCSRF && c.MaxAge < 0 {
+			csrfCleared = true
+		}
+	}
+	if !csrfCleared {
+		t.Error("__Host-csrf cookie was not cleared on logout")
+	}
+}
+
+func TestLogout_csrfMissing(t *testing.T) {
+	s, store := testServer(t, baseCfg())
+	putSess(t, store, "sid-lo-missing", &sessions.SessionRecord{StepikUserID: 3})
+	r := httptest.NewRequest("POST", "/auth/logout", nil)
+	r.Header.Set("Origin", "https://stepik.study67.fyi")
+	r.AddCookie(&http.Cookie{Name: sessions.CookieSID, Value: "sid-lo-missing"})
+	w := httptest.NewRecorder()
+	s.Routes().ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 on missing CSRF", w.Code)
+	}
+}
+
+func TestLogout_csrfMismatch(t *testing.T) {
+	s, store := testServer(t, baseCfg())
+	putSess(t, store, "sid-lo-bad", &sessions.SessionRecord{StepikUserID: 3})
+	rec, _ := store.GetSession("sid-lo-bad")
+	form := url.Values{"csrf_token": {"wrong"}}
+	r := httptest.NewRequest("POST", "/auth/logout", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Origin", "https://stepik.study67.fyi")
+	r.AddCookie(&http.Cookie{Name: sessions.CookieSID, Value: "sid-lo-bad"})
+	r.AddCookie(&http.Cookie{Name: sessions.CookieCSRF, Value: rec.CSRFToken})
+	w := httptest.NewRecorder()
+	s.Routes().ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 on CSRF mismatch", w.Code)
+	}
+}
+
+func TestLogout_csrfInQueryRejected(t *testing.T) {
+	s, store := testServer(t, baseCfg())
+	putSess(t, store, "sid-lo-query", &sessions.SessionRecord{StepikUserID: 3})
+	rec, _ := store.GetSession("sid-lo-query")
+	r := httptest.NewRequest("POST", "/auth/logout?csrf_token="+rec.CSRFToken, nil)
+	r.Header.Set("Origin", "https://stepik.study67.fyi")
+	r.AddCookie(&http.Cookie{Name: sessions.CookieSID, Value: "sid-lo-query"})
+	r.AddCookie(&http.Cookie{Name: sessions.CookieCSRF, Value: rec.CSRFToken})
+	w := httptest.NewRecorder()
+	s.Routes().ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 when CSRF token is only in query string", w.Code)
+	}
+}
+
+func TestIndex_includesCSRFInLogoutForm(t *testing.T) {
+	s, store := testServer(t, baseCfg())
+	putSess(t, store, "sid-csrf", &sessions.SessionRecord{StepikUserID: 1, AllowedClassIDs: []int64{82866}})
+	r := httptest.NewRequest("GET", "/", nil)
+	r.AddCookie(&http.Cookie{Name: sessions.CookieSID, Value: "sid-csrf"})
+	w := httptest.NewRecorder()
+	s.Routes().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	rec, _ := store.GetSession("sid-csrf")
+	body := w.Body.String()
+	if !strings.Contains(body, `name="csrf_token"`) || !strings.Contains(body, rec.CSRFToken) {
+		t.Errorf("index logout form missing CSRF hidden field: %s", body)
 	}
 }
 

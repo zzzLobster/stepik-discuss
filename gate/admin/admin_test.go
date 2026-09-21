@@ -38,11 +38,16 @@ func testAdmin(store *sessions.Store) *Admin {
 func putSess(t *testing.T, store *sessions.Store, sid string, uid int64, teacher bool) {
 	t.Helper()
 	now := time.Now()
+	csrf, err := sessions.NewCSRFToken()
+	if err != nil {
+		t.Fatal(err)
+	}
 	rec := &sessions.SessionRecord{
 		StepikUserID: uid, IsTeacher: teacher,
 		AllowedClassIDs: []int64{82866},
 		CreatedAt:       now, LastVerifiedAt: now,
 		ExpiresAt: now.Add(30 * 24 * time.Hour), LastSeenAt: now,
+		CSRFToken: csrf,
 	}
 	if err := store.PutSession(sid, rec); err != nil {
 		t.Fatal(err)
@@ -64,6 +69,10 @@ func postAs(t *testing.T, a *Admin, path, sid, origin string, form url.Values) *
 	}
 	if sid != "" {
 		r.AddCookie(&http.Cookie{Name: sessions.CookieSID, Value: sid})
+		if sess, err := a.Store.GetSession(sid); err == nil && sess != nil && sess.CSRFToken != "" {
+			r.AddCookie(&http.Cookie{Name: sessions.CookieCSRF, Value: sess.CSRFToken})
+			r.Header.Set("X-CSRF-Token", sess.CSRFToken)
+		}
 	}
 	w := httptest.NewRecorder()
 	a.ServeHTTP(w, r)
@@ -198,5 +207,36 @@ func TestAdmin_unknown404(t *testing.T) {
 	w := postAs(t, a, "/auth/admin/nope", "t1", "https://stepik.study67.fyi", nil)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestAdmin_csrfMissing(t *testing.T) {
+	store := testStore(t)
+	putSess(t, store, "t1", 1182644732, true)
+	a := testAdmin(store)
+	r := httptest.NewRequest("POST", "/auth/admin/logout-all", nil)
+	r.Header.Set("Origin", "https://stepik.study67.fyi")
+	r.AddCookie(&http.Cookie{Name: sessions.CookieSID, Value: "t1"})
+	w := httptest.NewRecorder()
+	a.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 on missing CSRF header", w.Code)
+	}
+}
+
+func TestAdmin_csrfMismatch(t *testing.T) {
+	store := testStore(t)
+	putSess(t, store, "t1", 1182644732, true)
+	a := testAdmin(store)
+	sess, _ := store.GetSession("t1")
+	r := httptest.NewRequest("POST", "/auth/admin/logout-all", nil)
+	r.Header.Set("Origin", "https://stepik.study67.fyi")
+	r.Header.Set("X-CSRF-Token", "wrong")
+	r.AddCookie(&http.Cookie{Name: sessions.CookieSID, Value: "t1"})
+	r.AddCookie(&http.Cookie{Name: sessions.CookieCSRF, Value: sess.CSRFToken})
+	w := httptest.NewRecorder()
+	a.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 on CSRF mismatch", w.Code)
 	}
 }

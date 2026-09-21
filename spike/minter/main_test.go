@@ -56,7 +56,7 @@ func TestSpikeMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tampered := studentJWT[:len(studentJWT)-1] + flipLast(studentJWT[len(studentJWT)-1:])
+	tampered := tamperPayload(studentJWT)
 
 	teacher := verify(t, secret, site, teacherJWT)
 	if teacher.User.ID != "stepik_1182644732" {
@@ -92,16 +92,16 @@ func TestSpikeAdminMapping(t *testing.T) {
 	}
 }
 
-func TestFlipLast(t *testing.T) {
-	if flipLast("a") != "b" {
-		t.Errorf("flipLast(a) = %q", flipLast("a"))
+func TestTamperPayload(t *testing.T) {
+	signed, _, err := gatejwt.Mint("s", "stepik-discuss", 1, "N", "", false)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if flipLast("x") != "a" {
-		t.Errorf("flipLast(x) = %q", flipLast("x"))
+	tampered := tamperPayload(signed)
+	if tampered == signed {
+		t.Fatal("tamperPayload did not change token")
 	}
-	for _, s := range []string{"a", "b", "Z", "9"} {
-		if !strings.HasSuffix("tok"+flipLast(s), flipLast(s)) {
-			t.Errorf("flipLast(%q) broken", s)
-		}
+	if len(strings.Split(tampered, ".")) != 3 {
+		t.Fatalf("tampered token malformed: %q", tampered)
 	}
 }

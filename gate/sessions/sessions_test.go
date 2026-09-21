@@ -3,8 +3,10 @@ package sessions
 import (
 	"bytes"
 	"crypto/rand"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -311,5 +313,118 @@ func TestPing_ok(t *testing.T) {
 	s := openTest(t)
 	if err := s.Ping(); err != nil {
 		t.Fatalf("Ping = %v", err)
+	}
+}
+
+func TestNewCSRFToken_64hex_unique(t *testing.T) {
+	a, err := NewCSRFToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := NewCSRFToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b {
+		t.Fatal("duplicate CSRF token")
+	}
+	if len(a) != 64 {
+		t.Errorf("len = %d, want 64 (32B hex)", len(a))
+	}
+}
+
+func TestSetCSRF_cookieAttrs(t *testing.T) {
+	w := httptest.NewRecorder()
+	SetCSRF(w, "tok")
+	c := w.Result().Cookies()[0]
+	if c.Name != "__Host-csrf" {
+		t.Errorf("name = %q, want __Host-csrf", c.Name)
+	}
+	if c.Path != "/" {
+		t.Errorf("Path = %q, want /", c.Path)
+	}
+	if !c.Secure {
+		t.Error("Secure = false, want true")
+	}
+	if c.HttpOnly {
+		t.Error("HttpOnly = true, want false so JS can read the cookie")
+	}
+	if c.SameSite != http.SameSiteLaxMode {
+		t.Errorf("SameSite = %v, want Lax", c.SameSite)
+	}
+	if c.MaxAge != CSRFMaxAgeSeconds {
+		t.Errorf("MaxAge = %d, want %d", c.MaxAge, CSRFMaxAgeSeconds)
+	}
+	if c.Domain != "" {
+		t.Errorf("Domain = %q, want empty (__Host- forbids Domain)", c.Domain)
+	}
+}
+
+func TestClearCSRF_expires(t *testing.T) {
+	w := httptest.NewRecorder()
+	ClearCSRF(w)
+	c := w.Result().Cookies()[0]
+	if c.Name != "__Host-csrf" || c.Path != "/" {
+		t.Errorf("clear cookie = %v %v", c.Name, c.Path)
+	}
+	if c.MaxAge >= 0 {
+		t.Errorf("clear MaxAge = %d, want negative", c.MaxAge)
+	}
+}
+
+func TestVerifyFormCSRF(t *testing.T) {
+	// No cookie: deny.
+	r := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	if VerifyFormCSRF(r) {
+		t.Error("accepted with no cookie")
+	}
+
+	// Cookie present but form value mismatches.
+	body := strings.NewReader("csrf_token=tok")
+	r = httptest.NewRequest(http.MethodPost, "/auth/logout", body)
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.AddCookie(&http.Cookie{Name: CookieCSRF, Value: "other"})
+	if VerifyFormCSRF(r) {
+		t.Error("accepted mismatched form token")
+	}
+
+	// Matching cookie and form value.
+	body = strings.NewReader("csrf_token=tok")
+	r = httptest.NewRequest(http.MethodPost, "/auth/logout", body)
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.AddCookie(&http.Cookie{Name: CookieCSRF, Value: "tok"})
+	if !VerifyFormCSRF(r) {
+		t.Error("rejected matching form token")
+	}
+
+	// Token supplied only in the query string must be rejected.
+	r = httptest.NewRequest(http.MethodPost, "/auth/logout?csrf_token=tok", nil)
+	r.AddCookie(&http.Cookie{Name: CookieCSRF, Value: "tok"})
+	if VerifyFormCSRF(r) {
+		t.Error("accepted csrf_token from URL query string")
+	}
+}
+
+func TestVerifyHeaderCSRF(t *testing.T) {
+	// No cookie: deny.
+	r := httptest.NewRequest(http.MethodPost, "/auth/admin/logout-all", nil)
+	if VerifyHeaderCSRF(r) {
+		t.Error("accepted with no cookie")
+	}
+
+	// Cookie present but header mismatches.
+	r = httptest.NewRequest(http.MethodPost, "/auth/admin/logout-all", nil)
+	r.AddCookie(&http.Cookie{Name: CookieCSRF, Value: "tok"})
+	r.Header.Set("X-CSRF-Token", "other")
+	if VerifyHeaderCSRF(r) {
+		t.Error("accepted mismatched header")
+	}
+
+	// Matching cookie and header.
+	r = httptest.NewRequest(http.MethodPost, "/auth/admin/logout-all", nil)
+	r.AddCookie(&http.Cookie{Name: CookieCSRF, Value: "tok"})
+	r.Header.Set("X-CSRF-Token", "tok")
+	if !VerifyHeaderCSRF(r) {
+		t.Error("rejected matching header")
 	}
 }

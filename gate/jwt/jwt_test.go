@@ -23,6 +23,26 @@ func parse(t *testing.T, secret, audience, signed string) *Claims {
 	return claims
 }
 
+// tamperPayload flips a character in the JWT payload segment so the signature
+// no longer matches the content. Flipping the last character of the token is
+// unreliable because it is often base64 padding ('=') and remains valid.
+func tamperPayload(signed string) string {
+	parts := strings.Split(signed, ".")
+	if len(parts) != 3 {
+		return signed
+	}
+	payload := parts[1]
+	if len(payload) == 0 {
+		return signed
+	}
+	flip := "a"
+	if payload[0] == 'a' {
+		flip = "b"
+	}
+	parts[1] = flip + payload[1:]
+	return strings.Join(parts, ".")
+}
+
 func TestMint_shape(t *testing.T) {
 	signed, jti, err := Mint("test-secret-0123456789", "stepik-discuss", 1182644732, "Teacher Name", "https://cdn/avatar.png", true)
 	if err != nil {
@@ -114,13 +134,7 @@ func TestMint_tamperedRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	last := signed[len(signed)-1:]
-	flip := "a"
-	if strings.HasSuffix(signed, "a") {
-		flip = "b"
-	}
-	_ = last
-	tampered := signed[:len(signed)-1] + flip
+	tampered := tamperPayload(signed)
 	_, err = jwtlib.ParseWithClaims(tampered, &Claims{}, func(tok *jwtlib.Token) (any, error) {
 		return []byte("s"), nil
 	}, jwtlib.WithAudience("stepik-discuss"), jwtlib.WithIssuer("remark42"))
