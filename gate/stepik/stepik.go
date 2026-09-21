@@ -131,10 +131,11 @@ func (c *Client) ExchangeCode(ctx context.Context, clientID, secret, redirect, c
 
 // RedeemRefresh exchanges a stored refresh token for a fresh access token.
 // refreshOut is empty when the endpoint omits rotation: the caller must
-// retain the previous refresh token. A 400 (invalid_grant or bare) or 401
+// retain the previous refresh token. A 400 containing invalid_grant or any 401
 // means the refresh token is dead and is reported as UnauthorizedError with
 // no retry; 429/5xx/transport map to TransientError with retry; other 4xx
-// yield a plain non-retryable error.
+// (including 400 without invalid_grant) yield a plain non-retryable error
+// that backs off without wiping the stored refresh.
 func (c *Client) RedeemRefresh(ctx context.Context, clientID, secret, refresh string) (access, refreshOut string, expires time.Time, err error) {
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
@@ -198,8 +199,16 @@ func (c *Client) RedeemRefresh(ctx context.Context, clientID, secret, refresh st
 			c.log.Warn("stepik refresh transient", "status", resp.StatusCode, "latency_ms", latency)
 			last = &TransientError{Status: resp.StatusCode, After: after}
 			continue
-		case resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized:
+		case resp.StatusCode == http.StatusUnauthorized:
+			c.log.Warn("stepik refresh unauthorized", "status", resp.StatusCode, "latency_ms", latency, "body_trunc", truncRefreshBody(body))
 			return "", "", time.Time{}, &UnauthorizedError{Status: resp.StatusCode}
+		case resp.StatusCode == http.StatusBadRequest:
+			if isInvalidGrant(body) {
+				c.log.Warn("stepik refresh invalid_grant", "status", resp.StatusCode, "latency_ms", latency, "body_trunc", truncRefreshBody(body))
+				return "", "", time.Time{}, &UnauthorizedError{Status: resp.StatusCode}
+			}
+			c.log.Warn("stepik refresh bad request", "status", resp.StatusCode, "latency_ms", latency, "body_trunc", truncRefreshBody(body))
+			return "", "", time.Time{}, fmt.Errorf("stepik refresh status=400 body=%.200s", body)
 		default:
 			return "", "", time.Time{}, fmt.Errorf("stepik refresh status=%d", resp.StatusCode)
 		}
@@ -288,6 +297,17 @@ func retryAfter(h string) time.Duration {
 		return d
 	}
 	return 0
+}
+
+func isInvalidGrant(body []byte) bool {
+	return bytes.Contains(bytes.ToLower(body), []byte("invalid_grant"))
+}
+
+func truncRefreshBody(body []byte) string {
+	if len(body) > 200 {
+		body = body[:200]
+	}
+	return string(body)
 }
 
 func (c *Client) GetLoggedID(ctx context.Context, token string) (int64, error) {

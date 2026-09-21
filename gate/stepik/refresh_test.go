@@ -158,7 +158,6 @@ func TestRedeem_invalidGrantNoRetry(t *testing.T) {
 		body   map[string]any
 	}{
 		{"invalid_grant", 400, map[string]any{"error": "invalid_grant"}},
-		{"bare_400", 400, map[string]any{}},
 		{"bare_401", 401, map[string]any{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -172,6 +171,33 @@ func TestRedeem_invalidGrantNoRetry(t *testing.T) {
 			}
 			if *hits != 1 {
 				t.Errorf("hits = %d, want 1 (no retry on dead refresh)", *hits)
+			}
+		})
+	}
+}
+
+func TestRedeem_badRequestWithoutGrantIsPlain(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+	}{
+		{"bare_400", map[string]any{}},
+		{"invalid_request", map[string]any{"error": "invalid_request"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, hits := refreshServer(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(400)
+				writeTokenJSON(w, tc.body)
+			})
+			_, _, _, err := c.RedeemRefresh(context.Background(), "cid", "csecret", "r-old")
+			if err == nil {
+				t.Fatal("want plain error on 400 without invalid_grant")
+			}
+			if IsUnauthorized(err) || IsTransient(err) {
+				t.Errorf("err = %v, want plain non-retryable error", err)
+			}
+			if *hits != 1 {
+				t.Errorf("hits = %d, want 1 (no retry on 400)", *hits)
 			}
 		})
 	}
