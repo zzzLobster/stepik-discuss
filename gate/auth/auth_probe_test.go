@@ -328,3 +328,41 @@ func mustGet(t *testing.T, c *Checker, sid string) *sessions.SessionRecord {
 	}
 	return sess
 }
+
+func TestStaleOrFresh_HonorsRetryAfter(t *testing.T) {
+	c := probeCAChecker(t)
+	c.Cfg.RetryAfter = time.Minute
+	sid := "stale-after"
+	now := time.Now()
+	putSession(t, c.Store, sid, &sessions.SessionRecord{
+		StepikUserID:   123,
+		LastVerifiedAt: now.Add(-time.Hour),
+		LastSeenAt:     now.Add(-time.Hour),
+	})
+	sess := mustGet(t, c, sid)
+	terr := &stepik.TransientError{Status: 429, After: 30 * time.Minute}
+	stale, err := c.staleOrFresh(context.Background(), sid, sess, now, terr)
+	if err != nil || !stale {
+		t.Fatalf("staleOrFresh = %v,%v; want true,nil", stale, err)
+	}
+	want := now.Add(30*time.Minute + retryJitter(sid))
+	if got := mustGet(t, c, sid).NextRetryAt; got.Before(want.Add(-30*time.Second)) || got.After(want.Add(30*time.Second)) {
+		t.Errorf("NextRetryAt = %v, want ~%v (server After wins)", got, want)
+	}
+
+	sid2 := "stale-cfg"
+	putSession(t, c.Store, sid2, &sessions.SessionRecord{
+		StepikUserID:   124,
+		LastVerifiedAt: now.Add(-time.Hour),
+		LastSeenAt:     now.Add(-time.Hour),
+	})
+	sess2 := mustGet(t, c, sid2)
+	stale, err = c.staleOrFresh(context.Background(), sid2, sess2, now, nil)
+	if err != nil || !stale {
+		t.Fatalf("staleOrFresh = %v,%v; want true,nil", stale, err)
+	}
+	want2 := now.Add(time.Minute + retryJitter(sid2))
+	if got := mustGet(t, c, sid2).NextRetryAt; got.Before(want2.Add(-30*time.Second)) || got.After(want2.Add(30*time.Second)) {
+		t.Errorf("NextRetryAt = %v, want ~%v (cfg fallback)", got, want2)
+	}
+}

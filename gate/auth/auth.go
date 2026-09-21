@@ -295,10 +295,17 @@ func (c *Checker) ForceTeacherEmptyRefresh(ctx context.Context, sid string, sess
 	return c.refreshTeacher(ctx, sid, sess, now)
 }
 
-func (c *Checker) staleOrFresh(ctx context.Context, sid string, sess *sessions.SessionRecord, now time.Time) (bool, error) {
+func (c *Checker) staleOrFresh(ctx context.Context, sid string, sess *sessions.SessionRecord, now time.Time, terr error) (bool, error) {
 	_ = ctx
 	if now.Sub(sess.LastVerifiedAt) <= c.Cfg.MaxStale {
-		sess.NextRetryAt = now.Add(c.Cfg.RetryAfter + retryJitter(sid))
+		delay := c.Cfg.RetryAfter + retryJitter(sid)
+		var te *stepik.TransientError
+		if errors.As(terr, &te) && te.After > 0 {
+			if d := te.After + retryJitter(sid); d > delay {
+				delay = d
+			}
+		}
+		sess.NextRetryAt = now.Add(delay)
 		sess.LastSeenAt = now
 		if err := c.Store.PutSession(sid, sess); err != nil {
 			c.Log.Error("session save failed", "uid", sess.StepikUserID)
@@ -852,7 +859,7 @@ func (c *Checker) refreshTeacher(ctx context.Context, sid string, sess *sessions
 	if err != nil {
 		if !stepik.IsUnauthorized(err) {
 			c.Log.Warn("teacher recheck transient", "uid", sess.StepikUserID)
-			return c.staleOrFresh(ctx, sid, sess, now)
+			return c.staleOrFresh(ctx, sid, sess, now, err)
 		}
 		newPlain, res := c.tryRenewSession(ctx, sid, "teacher_401")
 		switch res {
@@ -862,7 +869,7 @@ func (c *Checker) refreshTeacher(ctx context.Context, sid string, sess *sessions
 			c.reloadSessionInPlace(sid, sess)
 		case renewTransient:
 			c.Log.Warn("teacher recheck transient", "uid", sess.StepikUserID)
-			return c.staleOrFresh(ctx, sid, sess, now)
+			return c.staleOrFresh(ctx, sid, sess, now, nil)
 		default:
 			return false, ErrExpired
 		}
@@ -870,7 +877,7 @@ func (c *Checker) refreshTeacher(ctx context.Context, sid string, sess *sessions
 		if err != nil {
 			if !stepik.IsUnauthorized(err) {
 				c.Log.Warn("teacher recheck transient", "uid", sess.StepikUserID)
-				return c.staleOrFresh(ctx, sid, sess, now)
+				return c.staleOrFresh(ctx, sid, sess, now, err)
 			}
 			return false, ErrExpired
 		}
@@ -890,7 +897,7 @@ func (c *Checker) refreshTeacher(ctx context.Context, sid string, sess *sessions
 				if err != nil {
 					if !stepik.IsUnauthorized(err) {
 						c.Log.Warn("teacher recheck transient", "uid", sess.StepikUserID)
-						return c.staleOrFresh(ctx, sid, sess, now)
+						return c.staleOrFresh(ctx, sid, sess, now, err)
 					}
 					return false, ErrExpired
 				}
@@ -902,19 +909,19 @@ func (c *Checker) refreshTeacher(ctx context.Context, sid string, sess *sessions
 						return false, ErrExpired
 					case probeTransient:
 						c.Log.Warn("teacher recheck transient", "uid", sess.StepikUserID, "status", probeStatus(perr))
-						return c.staleOrFresh(ctx, sid, sess, now)
+						return c.staleOrFresh(ctx, sid, sess, now, perr)
 					}
 				}
 			case renewTransient:
 				c.Log.Warn("teacher recheck transient", "uid", sess.StepikUserID)
-				return c.staleOrFresh(ctx, sid, sess, now)
+				return c.staleOrFresh(ctx, sid, sess, now, nil)
 			default:
 				c.Log.Info("teacher token dead on empty probe", "uid", sess.StepikUserID, "matched", false)
 				return false, ErrExpired
 			}
 		case probeTransient:
 			c.Log.Warn("teacher recheck transient", "uid", sess.StepikUserID, "status", probeStatus(perr))
-			return c.staleOrFresh(ctx, sid, sess, now)
+			return c.staleOrFresh(ctx, sid, sess, now, perr)
 		}
 	}
 	ct, nonce, err := c.Store.EncryptToken(plain)
@@ -967,7 +974,7 @@ func (c *Checker) refreshStudent(ctx context.Context, sid string, sess *sessions
 	if verr != nil {
 		if !stepik.IsUnauthorized(verr) {
 			c.Log.Warn("student recheck transient", "uid", sess.StepikUserID, "auth_path", path)
-			return c.staleOrFresh(ctx, sid, sess, now)
+			return c.staleOrFresh(ctx, sid, sess, now, verr)
 		}
 		newPlain, res := c.tryRenewSession(ctx, sid, "student_401")
 		switch res {
@@ -977,7 +984,7 @@ func (c *Checker) refreshStudent(ctx context.Context, sid string, sess *sessions
 			c.reloadSessionInPlace(sid, sess)
 		case renewTransient:
 			c.Log.Warn("student recheck transient", "uid", sess.StepikUserID, "auth_path", path)
-			return c.staleOrFresh(ctx, sid, sess, now)
+			return c.staleOrFresh(ctx, sid, sess, now, nil)
 		default:
 			return false, ErrExpired
 		}
@@ -985,7 +992,7 @@ func (c *Checker) refreshStudent(ctx context.Context, sid string, sess *sessions
 		if verr != nil {
 			if !stepik.IsUnauthorized(verr) {
 				c.Log.Warn("student recheck transient", "uid", sess.StepikUserID, "auth_path", path)
-				return c.staleOrFresh(ctx, sid, sess, now)
+				return c.staleOrFresh(ctx, sid, sess, now, verr)
 			}
 			return false, ErrExpired
 		}
@@ -1005,7 +1012,7 @@ func (c *Checker) refreshStudent(ctx context.Context, sid string, sess *sessions
 				if verr != nil {
 					if !stepik.IsUnauthorized(verr) {
 						c.Log.Warn("student recheck transient", "uid", sess.StepikUserID, "auth_path", path)
-						return c.staleOrFresh(ctx, sid, sess, now)
+						return c.staleOrFresh(ctx, sid, sess, now, verr)
 					}
 					return false, ErrExpired
 				}
@@ -1017,19 +1024,19 @@ func (c *Checker) refreshStudent(ctx context.Context, sid string, sess *sessions
 						return false, ErrExpired
 					case probeTransient:
 						c.Log.Warn("student recheck transient", "uid", sess.StepikUserID, "auth_path", path, "status", probeStatus(perr))
-						return c.staleOrFresh(ctx, sid, sess, now)
+						return c.staleOrFresh(ctx, sid, sess, now, perr)
 					}
 				}
 			case renewTransient:
 				c.Log.Warn("student recheck transient", "uid", sess.StepikUserID, "auth_path", path)
-				return c.staleOrFresh(ctx, sid, sess, now)
+				return c.staleOrFresh(ctx, sid, sess, now, nil)
 			default:
 				c.Log.Info("student token dead on empty probe", "uid", sess.StepikUserID, "matched", false)
 				return false, ErrExpired
 			}
 		case probeTransient:
 			c.Log.Warn("student recheck transient", "uid", sess.StepikUserID, "auth_path", path, "status", probeStatus(perr))
-			return c.staleOrFresh(ctx, sid, sess, now)
+			return c.staleOrFresh(ctx, sid, sess, now, perr)
 		}
 	}
 	sess.AllowedClassIDs = idsOf(classes)

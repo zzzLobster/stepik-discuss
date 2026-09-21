@@ -46,7 +46,9 @@ func (c Class) DisplayTitle() string {
 
 type TransientError struct {
 	Status int
-	After  time.Duration
+	// After is the server's Retry-After ask, if present. Advisory only;
+	// staleOrFresh takes max(cfg RetryAfter, After) + jitter.
+	After time.Duration
 }
 
 func (e *TransientError) Error() string {
