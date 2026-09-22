@@ -1,112 +1,118 @@
 # 0002 — PWA wrapper + new-comment notifications (Web Push)
 
 Date: 2026-09-21
-Status: REFINED 2026-09-22 — READY FOR IMPLEMENTATION (Builder review 2026-09-22, security+UX pass; D0 → D1 → D2 → D3 in order; D1/D2 gated on D0 verdict per §11 + §15). Clarified 2026-09-22 (teacher confirm): Q1B resubscribe CSRF-exempt (Origin+sid) for SW compat Win/Mac/iOS/Android × Chrome/Chromium/Safari/Firefox; Q6 per-device logout (logged-out device gets nothing, sid-tracked delete + silent heal on relog, user-change guard); Q7 safe Caddy pick (own /offline.html handle, enumerated push handles, webhook 404); Q8 teacher validates P1/P2 on real iPhone+Android. Implements plan 0001 §7.4 hook (`manifest.json` + stub `sw.js` → full PWA + WebPush). Builder delta §15 is normative (fixes webhook Guard, JSON errors, revision injection, prune wiring, hash defs, send timeout, coalesce-immediate-first, Caddy snippets, push.js, consent constant, health counts, govulncheck job).
-Decisions 2026-09-21 (teacher): notify scope = all members except author; no quiet hours (revisit later); teacher Telegram channel designed but deferred to plan 0003. Refinements 2026-09-21 (teacher): test-version scope (site not used by students yet, webhook-only, no poller); Caddy enumerated `/push/*` + `/offline.html` fix ok; SW navigation-fallback frozen; CSRF = admin pattern; author FIO = webhook `User.Name` primary + sessions fallback; subscribe `"all"` for students + teacher, POST-narrow (no PATCH); expanded consent ok; 4 workers / 8 in-flight ok; `webpush-go v1.4.0` + `govulncheck` approved; `id:/` + `start_url:/?source=pwa`; maskable as separate file (verify existing `icon-512-maskable.png` in D1, regenerate if safe-zone fails); grep → unit test.
-Proposals 2026-09-22 (teacher: ok): Q1 enumerated Caddy handles + explicit `404` for `/push/webhook` at edge; Q2 frozen template without `truncate` (Gate truncates), `escapeJSONString` unquoted, `text_orig` + `text_html` + `created_unix`; Q3 `SessionsForUID`/`BestSessionForUID`, no-session → still push from stored `cids`, revoke suppresses; Q4 `key_version` per sub, single-key MVP (`_OLD` reserved, no dual-send); Q5 `POST /push/resubscribe` + SW best-effort handler + page-load key migration; Q6 `cid → title` in-memory cache with `Класс <cid>` fallback; Q7 `/push/health` deep via Caddy `header_up X-Gate-Auth`; `NOTIFY_QUEUE=200` frozen; caps (64KB webhook, 2KB payload, `AllowPush` 20/min/sid, queue 512) frozen.
-Test scope: site not used by students yet — D0/P1/P2 may run with test users + ephemeral secrets; no migration compat for old installs required.
-Domain: `stepik.study67.fyi` (same-domain, no split — iOS PWA + third-party-cookie safe, per 0001 §3)
-Stack delta: Gate (Go 1.27.1) + Caddy `2.11.4-alpine` + remark42 `v1.16.4` + Cloudflare direct (orange-cloud). No new containers.
+Status: READY FOR IMPLEMENTATION (refined 2026-09-22, security + UX pass)
+Implements plan 0001 §7.4 hook (`manifest.json` + stub `sw.js` → full PWA + Web Push).
 
-> Delegation note: Builder performed requirements + architecture directly from repo exploration + remark42/MDN docs + live web sources (remark42 `backend/app/notify/webhook.go`, `backend/app/store/comment.go` + `user.go`, `go-pkgz/notify/webhook.go`, RFC 8292 §4.2, web-push rotation guides, MDN `pushsubscriptionchange`, Apple Web Push docs, web.dev maskable, Caddy `handle` docs, `webpush-go` source). Review gates still apply: `go build/vet/test`, `govulncheck`, `caddy-verify.sh`, browser TESTLOG waves.
+Domain: `stepik.study67.fyi` (same-domain, no split — iOS PWA + third-party-cookie safe, per 0001 §3).
+Stack: Gate (Go 1.27.1) + Caddy `2.11.4-alpine` + remark42 `v1.16.4` + Cloudflare direct (orange-cloud). No new containers.
+Test scope: site not used by students yet — D0/P1/P2 run with test users + ephemeral secrets; no migration compat for old installs required.
+Test devices: teacher provides real iPhone (iOS ≥16.4, Share → Add to Home Screen, launched from icon) + Android Chrome for P1/P2 — confirmed 2026-09-22.
+Priorities: security first, then best UX.
+
+Review gates: `go build ./...`, `go vet ./...`, `go test -count=1 ./...`, `govulncheck ./...`, `deploy/caddy-verify.sh`, container `caddy validate`, browser TESTLOG waves P1/P2.
 
 ## 1. Goal
 
-Turn the closed discussion site into an **installable mobile web app** and notify users about **new comments** even when the tab is closed:
+Turn the closed discussion site into an installable mobile web app and notify users about new comments even when the tab is closed:
 
-1. **PWA installable** on Android (Chrome/Edge/Samsung) + iOS (Safari 16.4+, incl. iOS 26 HS-default) + desktop (Chrome/Edge Add-to-Dock) — `standalone`, own icon, splash, `start_url:/?source=pwa`, stable `id:/`.
-2. **Browser push notifications** about new comments via **Web Push (VAPID)** + Service Worker `push` → `showNotification`, deep-link to `/class/<cid>#remark-<comment_id>`.
-3. **Mobile-first UX**: class pages usable from Home-Screen icon, offline-safe static shell, RU copy, minors/152-FZ safe (no PII beyond `uid+fio+avatar`, closed threads only).
+1. PWA installable on Android (Chrome/Edge/Samsung) + iOS (Safari 16.4+, incl. iOS 26 HS-default) + desktop (Chrome/Edge Add-to-Dock) — `standalone`, own icon, splash, `start_url:/?source=pwa`, stable `id:/`.
+2. Browser push about new comments via Web Push (VAPID) + Service Worker `push` → `showNotification`, deep-link to `/class/<cid>#remark-<comment_id>`.
+3. Mobile-first UX: class pages usable from Home-Screen icon, offline-safe static shell, RU copy, minors/152-FZ safe (no PII beyond `uid+fio+avatar`, closed threads only).
 
-Non-goal: native App Store / Google Play wrappers (PWABuilder/TWA deferred), email/Telegram push (remark42-native, explicitly rejected for students — see §3), lesson-level threads (Phase 2 in 0001 §7.3 reuses same push plumbing).
+Non-goals: native App Store / Google Play wrappers (PWABuilder/TWA deferred); email/Telegram student push via remark42-native (rejected — requires emails/Telegram IDs we do not collect); lesson-level threads (Phase 2 in 0001 §7.3 reuses same push plumbing).
 
-## 2. Ground truth (do not re-debate, from 0001 + runbook + live code)
+## 2. Constraints (do not re-debate)
 
-- Gate serves today: `GET /manifest.json` (`standalone, scope:/, start_url:/`, icons `/static/icon-192.png`, `/static/icon-512.png purpose:any maskable` single-file combined), `GET /sw.js` stub (`fetch` passthrough), `apple-touch-icon.png`, `theme-color #3776AB`, `<link rel=manifest>` in `index.html`/`class.html`. Chromium install prompt **will not fire** with stub SW — needs real SW registration + `fetch` handler (MDN install criteria: HTTPS + manifest w/ 192+512 + `display` + registered SW). D1 splits icons into `any` + separate `maskable` file (never `"any maskable"` on one file).
-- `gate/handlers/handlers.go:Routes()` is wiring; `privateHeaders` = `Cache-Control: private,no-store` + `noindex` on all HTML/API. SW **must never cache** `/`, `/class/*`, `/auth/*`, `/discuss/*`, `/auth/me`.
-- Caddy contracts (enforced by `deploy/caddy-verify.sh`, CI `caddy-contract`): public `handle /discuss/web/* + uri strip_prefix /discuss` (→ `/web/*`); protected `handle_path /discuss/*` strips `/discuss`; gate gets full public URI via `header_up X-Forwarded-Uri /discuss{uri}`; 3-arg `redir`; healthcheck `http://localhost:8081/healthz`. **Any Caddyfile edit must re-run `deploy/caddy-verify.sh`.**
-- `forward_auth gate:8081 /auth/check` ONLY on `/discuss/*`, never on `/web/*`. `ExtractCID` fail-closed `403 unknown_thread` without `?url=`/class-`Referer`/iframe-`?url=` unwrap.
-- remark42 `v1.16.4` notification matrix (verified in docs `remark42.com/docs/configuration/notifications/` + `parameters` + `store/comment.go` + `go-pkgz/notify`, 2026-09-21):
-  - `NOTIFY_ADMINS=email|telegram|slack|webhook` (multi), `NOTIFY_USERS=email|telegram` — **user push via remark42-native requires email/Telegram identity, which our users don't have** (Gate-minted JWT only, `AUTH_ANON=false`, dummy `stepik` provider). So remark42-native user-notify is **unusable** — Gate-owned WebPush is the only per-student path.
-  - `NOTIFY_WEBHOOK_URL + NOTIFY_WEBHOOK_TEMPLATE + NOTIFY_WEBHOOK_HEADERS + NOTIFY_WEBHOOK_TIMEOUT (5s) + NOTIFY_QUEUE (200, frozen — fixes §2 draft stray "100")` — admin webhook fires **HTTP POST per new comment**. Template context is the **`store.Comment` struct** (verified in `backend/app/notify/webhook.go` + `backend/app/store/comment.go` + `user.go`, 2026-09-22): `{{.ID}}`, `{{.ParentID}}` (`pid`, empty for top-level), `{{.Text}}` (sanitized HTML via bluemonday — NOT plain text), `{{.Orig}}` (raw markdown source, preferred snippet input), `{{.User.ID}}` (= `stepik_<uid>`), `{{.User.Name}}`, `{{.Locator.SiteID}}`, `{{.Locator.URL}}`, `{{.Timestamp}}` (`time.Time`; `{{.Timestamp.Unix}}` method call for numeric epoch), `{{.Score}}` (int). **Only** filter is `escapeJSONString` (returns fully-quoted `json.Marshal` output — use WITHOUT surrounding quotes; `truncate` does NOT exist in the webhook FuncMap and must never appear in the template — Gate truncates server-side). Headers format `Header1:Value1,Header2:Value2` (split on first `:`, `TrimSpace`, no default `Content-Type` — set explicitly). Frozen template in §7.1; D0 spike proves verbatim (especially `.Timestamp.Unix` + `.Orig` populated).
-- iOS constraints (MDN + 2026 field reports): push **only after** Add-to-Home-Screen + user-granted permission **in response to tap**; Safari-only install ≤16.3, Share-menu install in any browser ≥16.4; no `beforeinstallprompt` on iOS (manual Share → Add instructions required); WebKit-only, no Bluetooth/USB/NFC (irrelevant here); storage quota large since Safari 17 (no problem for <20 users).
-- Scale/privacy: 2–3 classes, <20 users, RU, minors. Store only `uid+fio+avatar_url`. Threads never merge (`page_url` differs per `cid`). Cloudflare cache-bypass rule for `stepik.study67.fyi` must extend to new `/push/*` + `/sw.js` + `/offline.html` versioned URLs (all `BYPASS/DYNAMIC`, never cached).
-- Deps: `bbolt, golang-jwt/v5, x/oauth2, x/time/rate` + **approved `github.com/SherClockHolmes/webpush-go v1.4.0`** (teacher-approved 2026-09-21 as interim until a more stable/popular/maintainable lib appears; MIT, 440★, includes CVE-2024-51744 JWT fix + Content-Length fix; ~21 imports, no cgo). Pin via `go.mod` + `go.sum`, `go vet` + `govulncheck` in CI. Alternative hand-rolled VAPID rejected (crypto risk). No other deps.
+- Gate serves today: `GET /manifest.json` (standalone, `scope:/`, `start_url:/`, combined `any maskable` icon), `GET /sw.js` stub (fetch passthrough), `apple-touch-icon.png`, `theme-color #3776AB`, `<link rel=manifest>` in `index.html`/`class.html`. Chromium install prompt requires real SW registration + `fetch` handler. D1 splits icons into dedicated `any` + `maskable` files.
+- `gate/handlers/handlers.go:Routes()` is wiring; `privateHeaders` = `Cache-Control: private,no-store` + `noindex` on all HTML/API. SW must never cache `/`, `/class/*`, `/auth/*`, `/discuss/*`, `/auth/me`.
+- Caddy contracts (enforced by `deploy/caddy-verify.sh`, CI `caddy-contract`): public `handle /discuss/web/* + uri strip_prefix /discuss`; protected `handle_path /discuss/*` strips `/discuss`; gate gets full public URI via `header_up X-Forwarded-Uri /discuss{uri}`; 3-arg `redir`; healthcheck `http://localhost:8081/healthz`. Any Caddyfile edit must re-run `deploy/caddy-verify.sh`.
+- `forward_auth gate:8081 /auth/check` only on `/discuss/*`, never on `/web/*`. `ExtractCID` fail-closed `403 unknown_thread` without `?url=` / class-`Referer` / iframe-`?url=` unwrap.
+- remark42 `v1.16.4` notification model: `NOTIFY_ADMINS=email|telegram|slack|webhook` (multi), `NOTIFY_USERS=email|telegram`. User push via remark42-native requires email/Telegram identity which our users do not have (Gate-minted JWT only, `AUTH_ANON=false`, dummy `stepik` provider). Gate-owned Web Push is the only per-student path.
+- remark42 admin webhook fires HTTP POST per new comment. Template context is the `store.Comment` struct: `{{.ID}}`, `{{.ParentID}}` (empty for top-level), `{{.Text}}` (sanitized HTML via bluemonday), `{{.Orig}}` (raw markdown source), `{{.User.ID}}` (`stepik_<uid>`), `{{.User.Name}}`, `{{.Locator.SiteID}}`, `{{.Locator.URL}}`, `{{.Timestamp.Unix}}` (method call, numeric epoch), `{{.Score}}` (int). Only template function is `escapeJSONString` (returns fully-quoted `json.Marshal` output — use without surrounding quotes). Headers format `Header1:Value1,Header2:Value2` (split on first `:`, `TrimSpace`, no default `Content-Type` — set explicitly).
+- iOS constraints: push only after Add-to-Home-Screen + user-granted permission in response to tap; Share-menu install in any browser ≥16.4; no `beforeinstallprompt` on iOS (manual Share → Add instructions required); every `push` handler must end in `showNotification` (no silent push); `pushManager.subscribe({userVisibleOnly:true})` (Apple rejects `false`).
+- Scale/privacy: 2–3 classes, <20 users, RU, minors. Store only `uid+fio+avatar_url`. Threads never merge (`page_url` differs per `cid`). Cloudflare bypass covers `/push/*` + `/sw.js` + `/manifest.json` + `/offline.html` (`BYPASS/DYNAMIC`, never cached).
+- Deps: `bbolt, golang-jwt/v5, x/oauth2, x/time/rate` + `github.com/SherClockHolmes/webpush-go v1.4.0` (MIT, includes CVE-2024-51744 fix; pin via `go.mod` + `go.sum`, `go vet` + `govulncheck` in CI). No hand-rolled VAPID. No other deps.
 
-## 3. Architecture (final)
+## 3. Architecture
 
 ```
 Browser/PWA (SW + manifest)
   ──https──▶ Cloudflare ──https──▶ Caddy :443 ──▶ Gate :8081 (HTML + /push/* + /sw.js + /manifest.json)
   /discuss/* ──forward_auth──▶ Gate check ──allow──▶ remark42 :8080 (comments)
   remark42 ──NOTIFY_WEBHOOK_URL──▶ http://gate:8081/push/webhook (internal docker `app` net only,
-                    HMAC/secret header, NOT via Caddy/edge)
+                    secret header, NOT via Caddy/edge)
   Gate ──WebPush (VAPID)──▶ browser push service (FCM/APNs/Mozilla) ──▶ SW `push` ──▶ Notification
 ```
 
-- **Gate owns identity + subscriptions + fan-out; remark42 owns comment events; Caddy owns enforcement; push services own delivery.** Same-domain preserves iOS PWA + `__Host-sid` (`Secure, HttpOnly, SameSite=Lax`) semantics.
-- **Event source: remark42 admin webhook → Gate internal endpoint** (only source in MVP). Poller fallback (`GET /api/v1/find` every 5m) **dropped from MVP** per 2026-09-21 (test version, webhook-only; outage = log `push_webhook_gap`, next comment re-fires; documented as future, not D2 acceptance).
-- **No remark42-native `NOTIFY_USERS`** (would need student emails/Telegram IDs we don't collect and must not collect for minors). **No `NOTIFY_ADMINS=email/telegram`** for MVP either — teacher gets the same WebPush as students (plus existing `/discuss/admin/` moderation). Optional teacher Telegram channel later (Phase 2, needs bot token in VPS `.env` only).
-- Volumes/network unchanged: `app` bridge, no `ports:` on backends, only Caddy `80/443`. Volumes `gate-data:/data/gate.db` (new buckets `push_subs`, `push_meta`), `remark-data`, `caddy-data`. `push_subs` row includes `key_version` (fingerprint = first 8 hex of `sha256(VAPID_PUBLIC_KEY)`, backfilled `v1`; sender picks private key by version — single-key MVP, `_OLD` reserved per §7.1). In-memory `cid → title` cache (mutex map, populated at subscribe + login/refresh from `ClassTitles`, fallback `Класс <cid>`, lost on restart) supplies push titles without Stepik calls.
+- Gate owns identity + subscriptions + fan-out; remark42 owns comment events; Caddy owns enforcement; push services own delivery. Same-domain preserves iOS PWA + `__Host-sid` (`Secure, HttpOnly, SameSite=Lax`) semantics.
+- Event source: remark42 admin webhook → Gate internal endpoint (only source in MVP). No poller in MVP; outage = log `push_webhook_gap`, next comment re-fires.
+- No remark42-native `NOTIFY_USERS`; no `NOTIFY_ADMINS=email/telegram` in MVP — teacher gets the same Web Push as students (plus existing `/discuss/admin/` moderation).
+- Volumes/network unchanged: `app` bridge, no `ports:` on backends, only Caddy `80/443`. Volumes `gate-data:/data/gate.db` (new buckets `push_subs`, `push_meta`), `remark-data`, `caddy-data`.
+- Ownership to avoid import cycles: `gate/push` owns Store / webhook verification / validation / worker / coalesce / title cache only (imports `sessions`, `config` + stdlib; never `handlers`/`admin`). `gate/handlers` owns all `/push/*` + `/offline.html` HTTP wrappers (reuses `validSameOrigin`, `auth.LoadSession`, `AllowPush`). `gate/admin` imports `push` for prune functions only.
 
-## 4. URL / API map (additive, MVP frozen)
+## 4. URL / API contracts
 
-| URL | Auth | Content / contract |
-|-----|------|--------------------|
-| `GET /manifest.json` | public, `Cache-Control: public,max-age=3600` | Full PWA manifest (see §5). `id:/` (stable, never changes), `start_url:/?source=pwa`, `scope:/`, `display:standalone`, `orientation:portrait-primary`, `lang:ru`, `dir:ltr`, `theme_color/background_color`, icons 192 `any` + 512 `any` + 512 `maskable` separate file + `apple-touch-icon` 180, `categories:[education]`, `screenshots` deferred. |
-| `GET /sw.js` | public, `Cache-Control: no-store` in MVP (bare `register('/sw.js')`, no `?v=` query; versioning only via `STATIC_CACHE = "static-"+REV` injected from `buildRevision()`) | Real SW (see §6). Served by Gate (not static file) so `revision` can be injected. Scope `/`. |
-| `GET /push/vapid-key` | needs valid `sid` (student or teacher), `Cache-Control: no-store` | `{key: <VAPID-public-base64url>, fp: <key_version fp8>}` for `pushManager.subscribe({userVisibleOnly:true, applicationServerKey})`. 401 anon. SW/page JS must fetch (never bundle) so rotation needs no release. |
-| `POST /push/subscribe` | needs valid `sid`, Origin-checked (`https://stepik.study67.fyi` via `validSameOrigin`), header CSRF (`X-CSRF-Token` must match readable `__Host-csrf` cookie via `document.cookie`, same pattern as `admin.Admin`; no change to `/auth/me` shape), rate-limited 20/min per `sid` (new `AllowPush`: `rate.Every(3s)`, burst 20, keyed by `sid`) | Body JSON `{endpoint, keys:{p256dh, auth}, device:{ua, name?}, cids:[<cid…>] \| "all"}`. Validates endpoint URL `https://*` (reject `http:`; allow any `https` host — FCM/APNs/Mozilla today, future services tomorrow; log host), key lengths (p256dh 87-88 chars b64url, auth 22-24), `cids ⊆ session.allowed` OR `"all"` (students + teacher both may send `"all"`; server expands to live `allowed` at **send** time via `BestSessionForUID`, so revoke takes effect immediately). Upsert into `push_subs[hex(sha256(endpoint))] → {uid, sid, endpoint, p256dh, auth, cids|all, ua, key_version: fp8(current key), created_at, last_ok_at, fail_count}` where `fp8 = hex(sha256([]byte(VAPID_PUBLIC_KEY base64url string)))[:8]`, `sid` = originating session that subscribed (for per-device logout delete). Populates `cid → title` cache from `session.ClassTitles`. Page also stores `localStorage push_uid=uid, push_cids, vapid_key_fp=fp` for silent heal + user-change guard (see §6). Returns `{ok:true}`. Per-class disable = `POST` narrowed `cids` array (no `PATCH` method). Max body 64KB (`MaxBytesReader`). |
-| `POST /push/unsubscribe` | same as subscribe | Body `{endpoint}`. Deletes by hash. Idempotent (200 even if missing). |
-| `POST /push/resubscribe` | needs valid `sid` + `validSameOrigin`, rate-limited 20/min/sid, **CSRF-exempt (Q1B 2026-09-22)** — SW has no `document.cookie`/`localStorage`, cannot send `X-CSRF-Token`; `SameSite=Lax __Host-sid` + Origin check is sufficient (cross-site fetch won't carry cookie, forgery dead; low-risk swap of own endpoints only). SW `fetch(..., {credentials:'include'})` sends `__Host-sid` automatically. Works Win/Mac/iOS/Android × Chrome/Chromium/Safari/Firefox (Safari rarely fires the event — page-load migration is primary healer). | Body `{old_endpoint, endpoint, keys:{p256dh, auth}, device:{ua}}`. Server verifies old row belongs to same `uid` (or empty → INSERT fallback for cleared site data), copies `cids`, deletes old hash, upserts new with `{uid, sid=current sid, key_version: fp8}`. Returns `{ok:true}`. Required for `pushsubscriptionchange` + page-load key migration (see §6/§7.2). Max body 64KB. |
-| `POST /push/webhook` | **internal only**: Docker-subnet guard (loopback/private peer, same as `auth.Guard` IP check) + `X-Push-Webhook-Secret: <PUSH_WEBHOOK_SECRET 32B hex>` (from VPS `.env`, shared remark42 `NOTIFY_WEBHOOK_HEADERS` ↔ Gate env). **Never routed via Caddy** (no Caddy handle — direct `http://gate:8081` on `app` net; edge has explicit `404` block, see below). Fail-closed 404 on bad secret/IP (same pattern as `X-Gate-Auth` Guard — 404 not 401/403 to avoid probing). Max body 64KB (`MaxBytesReader`). | remark42 POST JSON `{site, page_url, comment:{id, parent_id, user_id, user_name, text_html, text_orig, created_unix, score}}` (frozen template §7.1 — fields map to `Locator.SiteID / Locator.URL / ID / ParentID / User.ID / User.Name / Text / Orig / Timestamp.Unix / Score`). Gate: `ExtractCID(page_url)` → `cid`; drop if `cid` invalid/`site != SITE`; strip `stepik_` prefix for `author_uid`; snippet = `text_orig` primary, HTML-stripped `text_html` fallback, truncated 120 runes server-side; fan-out async (queue, see §7). Returns `200 {ok:true}` fast (<200ms, enqueue only). |
-| `GET /push/health` | shallow public `{ok:true}`; deep `?deep=1` Caddy-only (`X-Gate-Auth` Guard, same pattern as `/healthz` — Caddy injects `header_up X-Gate-Auth` ONLY on this handle) | Deep returns `{ok:true, subs:<n>, queue:<n>}`. Kept separate from `/healthz` (approved 2026-09-21). |
-| `GET /offline.html` | public, `Cache-Control: public,max-age=3600` | Generic shell, no user data (see §6). Must exist or SW `cache.add` fails install. |
-| Existing `/`, `/class/<cid>`, `/auth/*`, `/discuss/*`, `/healthz`, `/robots.txt`, `/static/*` | unchanged | Class pages add push UI (bell toggle + iOS install hint) + page-load VAPID-key migration check; no change to `forward_auth` or `ExtractCID`. |
+| URL | Auth | Contract |
+|-----|------|----------|
+| `GET /manifest.json` | public, `Cache-Control: public,max-age=3600` | Full manifest per §5. |
+| `GET /sw.js` | public, `Cache-Control: no-store` | Real SW per §6. Served by Gate (not static file) so `REV` from `buildRevision()` can be injected. Scope `/`. Bare `register('/sw.js')`, no `?v=` query. |
+| `GET /push/vapid-key` | valid `sid`, `Cache-Control: no-store` | `{key, fp}` for `pushManager.subscribe({userVisibleOnly:true, applicationServerKey})`. `401` anon. Page/SW fetch (never bundle) so rotation needs no release. |
+| `POST /push/subscribe` | valid `sid` + `validSameOrigin` + `X-CSRF-Token` matching readable `__Host-csrf` cookie (same pattern as `admin.Admin`) + `AllowPush` per `sid` | Body `{endpoint, keys:{p256dh, auth}, device:{ua, name?}, cids:[cid…] \| "all"}`. Validation per §7.3. Upsert into `push_subs[hex(sha256(endpoint))]`. Returns `{ok:true}`. Per-class disable = `POST` narrowed `cids` array (no `PATCH`). `MaxBytesReader` 64KB. |
+| `POST /push/unsubscribe` | same as subscribe | Body `{endpoint}`. Delete by hash. Idempotent (200 even if missing). `MaxBytesReader` 64KB. |
+| `POST /push/resubscribe` | valid `sid` + `validSameOrigin` + `AllowPush`; CSRF-exempt (SW has no `document.cookie`/`localStorage`; `SameSite=Lax __Host-sid` + Origin is sufficient; cross-site fetch carries no cookie) | Body `{old_endpoint, endpoint, keys:{p256dh, auth}, device:{ua}}`. Server verifies old row belongs to same `uid` (empty → INSERT fallback), copies `cids`, deletes old hash, upserts new with current `sid` + `key_version`. Returns `{ok:true}`. SW `fetch(...,{credentials:'include'})`. `MaxBytesReader` 64KB. |
+| `POST /push/webhook` | internal only: loopback/private peer check + `X-Push-Webhook-Secret` constant-time compare; fail-closed `404` (not `401/403`); `MaxBytesReader` 64KB before parse. Never routed via Caddy (edge has explicit `404` block). | remark42 POST JSON `{site, page_url, comment:{id, parent_id, user_id, user_name, text_html, text_orig, created_unix, score}}`. Gate: `ExtractCID` → `cid`; drop if unknown or `site != SITE`; strip `stepik_` prefix for `author_uid`; snippet server-side; enqueue; return `200 {ok:true}` fast (<200ms, enqueue only). |
+| `GET /push/health` | shallow public `{ok:true}`; deep `?deep=1` requires `X-Gate-Auth` Guard (Caddy injects `header_up` only on this handle) | Deep returns `{ok:true, subs:<bolt count>, queue:<len(chan)>}`. Separate from `/healthz`. |
+| `GET /offline.html` | public, `Cache-Control: public,max-age=3600` | Generic shell, no user data per §6. Must exist or SW install fails. |
+| Existing `/`, `/class/<cid>`, `/auth/*`, `/discuss/*`, `/healthz`, `/robots.txt`, `/static/*` | unchanged | Class pages add push UI (bell + iOS hint) + page-load key migration; no change to `forward_auth` or `ExtractCID`. |
 
-Caddy delta (enumerated, never wildcard — `handle` blocks are mutually exclusive, longest-path-first; safe pick Q7 2026-09-22): own `handle /offline.html` (not `@static` edit, so SW `cache.add` can't 404 on matcher typo) + new `handle /push/vapid-key*`, `handle /push/subscribe*`, `handle /push/unsubscribe*`, `handle /push/resubscribe*` (plain `reverse_proxy gate:8081`); `handle /push/health*` with `header_up X-Gate-Auth {env.CADDY_GATE_TOKEN}` (deep only; shallow ignores it); `handle /push/webhook* { respond "Not found" 404 }` (defense-in-depth — proves edge can never reach the secret even if a future wildcard appears). Compose `NOTIFY_WEBHOOK_TEMPLATE` single-quoted YAML `'{"site":...}'` (no `$`, safe from interpolation), `NOTIFY_WEBHOOK_HEADERS` double-quoted for `${PUSH_WEBHOOK_SECRET}` expansion. Extend `deploy/caddy-verify.sh`: `/push/webhook → 404`, `/push/vapid-key` without cookie → 401 (proves proxying, not 404), `/offline.html → 200`, deep without token → 404. Keep CF `BYPASS`. Cloudflare Cache Rule `bypass-private` (hostname `stepik.study67.fyi`) already covers them; verify `cf-cache-status: BYPASS/DYNAMIC` on `/push/*`, `/offline.html` in TESTLOG (teacher validates P1/P2 on real iPhone+Android, §11).
+Push API errors are JSON (not HTML): `Content-Type: application/json`, `Cache-Control: private,no-store`, `X-Robots-Tag: noindex`, body `{error:<code>}` with `auth_required|forbidden|transient|rate_limited|bad_request`. `401` anon/expired, `403` Origin/CSRF/ACL fail, `429` + `Retry-After` on `AllowPush` deny. No change to `/auth/me` shape.
 
-## 5. PWA manifest + installability (D1)
+## 5. PWA manifest + installability
 
-- `handleManifest` extension (Go, `gate/handlers`):
-  ```json
-  {
-    "name": "Обсуждения классов Stepik",
-    "short_name": "Stepik Discuss",
-    "id": "/",
-    "start_url": "/?source=pwa",
-    "scope": "/",
-    "display": "standalone",
-    "orientation": "portrait-primary",
-    "lang": "ru",
-    "dir": "ltr",
-    "theme_color": "#3776AB",
-    "background_color": "#ffffff",
-    "categories": ["education"],
-    "icons": [
-      {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
-      {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
-      {"src": "/static/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
-    ]
-  }
-  ```
-  `id:/` is stable (never changes → no ghost-install if `start_url` query changes later; both same-origin, `start_url` within `scope:/` per MDN/Chrome). Existing `icon-512-maskable.png` (in `gate/static/`) is accepted only if it passes: opaque full-bleed, logo inside central 80%-diameter safe-zone circle (410px of 512, 51px background-only ring per side), no transparency — verify in DevTools Application → Manifest → safe-area preview + maskable.app shapes, regenerate via Maskable.app Editor if it fails. Never `"any maskable"` on one file (Chrome warns, logo shrinks 20%; Lighthouse maskable audit requires a dedicated `maskable` entry). 180px `apple-touch-icon.png` already present. No other binary assets beyond re-exported PNGs.
-- Templates (`index.html`, `class.html` `<head>`): keep `<link rel=manifest>`, add `<meta name=mobile-web-app-capable content=yes>`, `<meta name=apple-mobile-web-app-capable content=yes>`, `<meta name=apple-mobile-web-app-status-bar-style content=default>`, `<meta name=apple-mobile-web-app-title content="Stepik Discuss">`. Register SW unconditionally (all pages): `<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js')}</script>` — deferred, non-blocking.
+`handleManifest` (Go, `gate/handlers`):
+
+```json
+{
+  "name": "Обсуждения классов Stepik",
+  "short_name": "Stepik Discuss",
+  "id": "/",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "lang": "ru",
+  "dir": "ltr",
+  "theme_color": "#3776AB",
+  "background_color": "#ffffff",
+  "categories": ["education"],
+  "icons": [
+    {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "/static/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}
+```
+
+- `id:/` stable (never changes); `start_url` within `scope:/`. Never `"any maskable"` on one file.
+- `icon-512-maskable.png` accepted only if: opaque full-bleed, logo inside central 80%-diameter safe-zone circle (410px of 512), no transparency. Verify in DevTools Application → Manifest → safe-area preview + maskable.app shapes; regenerate via Maskable.app Editor if it fails. 180px `apple-touch-icon.png` already present.
+- Templates (`index.html`, `class.html` `<head>`): keep `<link rel=manifest>`, add `<meta name=mobile-web-app-capable content=yes>`, `<meta name=apple-mobile-web-app-capable content=yes>`, `<meta name=apple-mobile-web-app-status-bar-style content=default>`, `<meta name=apple-mobile-web-app-title content="Stepik Discuss">`. Register SW unconditionally: `<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js')}</script>` (deferred, non-blocking).
 - Install UX (RU, minimal, no nagging):
   - Android/Desktop Chromium: listen `beforeinstallprompt`, show inline `Установить приложение` button once (dismiss persists in `localStorage`), `appinstalled` hides it.
-  - iOS: UA-detect `iPhone|iPad` + `!navigator.standalone` + `!matchMedia('(display-mode: standalone)')` → one-line hint `На iPhone: Поделиться → На экран «Домой», затем откройте с иконки — тогда придут уведомления.` Shown max once per device (localStorage), never blocks content.
-  - Lighthouse PWA audit ≥90 (installable + splash + themed) in CI browser check (manual `npx lighthouse` in TESTLOG Wave P1).
-- `start_url:/?source=pwa` lets Gate log `source=pwa` launches (analytics-lite, no external tracker — counts only).
+  - iOS: `iPhone|iPad` + `!navigator.standalone` + `!matchMedia('(display-mode: standalone)')` → one-line hint `На iPhone: Поделиться → На экран «Домой», затем откройте с иконки — тогда придут уведомления.` Shown max once per device, never blocks content.
+  - Lighthouse PWA audit ≥90 in TESTLOG Wave P1.
+- `start_url:/?source=pwa` enables launch counting (no external tracker).
 
-## 6. Service Worker (D1, privacy-first)
+## 6. Service Worker + offline + page JS
 
-File: Gate-served `GET /sw.js` (Go handler, `Content-Type: application/javascript`, `Cache-Control: no-store`), version string injected from `buildRevision()`. Bare `register('/sw.js')`, no `?v=` query.
+Gate-served `GET /sw.js` (`Content-Type: application/javascript`, `Cache-Control: no-store`), `REV` injected from `buildRevision()` via new `handlers.Server.Revision` field set from `main.buildRevision()`. `STATIC_CACHE = "static-"+REV`.
 
 ```js
+function urlBase64ToUint8Array(s){s=s.replace(/-/g,"+").replace(/_/g,"/");const p="=".repeat((4-s.length%4)%4);const b=atob(s+p);const o=new Uint8Array(b.length);for(let i=0;i<b.length;i++)o[i]=b.charCodeAt(i);return o;}
 const REV = "<git-rev>"; const STATIC_CACHE = "static-" + REV;
 const STATIC_ASSETS = ["/static/style.css", "/static/icon-192.png", "/static/icon-512.png", "/static/icon-512-maskable.png", "/static/apple-touch-icon.png", "/static/favicon.svg", "/offline.html"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(STATIC_CACHE).then((c) => c.add(new Request("/offline.html", {cache: "reload"}))).then(() => caches.open(STATIC_CACHE).then((c) => c.addAll(STATIC_ASSETS.filter((u) => u !== "/offline.html")))).then(() => self.skipWaiting())); });
-self.addEventListener("activate", (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== STATIC_CACHE).map((k) => caches.delete(k)))).then(() => { if ("navigationPreload" in self.registration) { return self.registration.navigationPreload.enable().catch(() => {}); } }).then(() => self.clients.claim())); });
+self.addEventListener("activate", (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== STATIC_CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener("fetch", (e) => {
   const u = new URL(e.request.url);
   if (e.request.method !== "GET" || u.origin !== location.origin) return;
@@ -118,14 +124,13 @@ self.addEventListener("fetch", (e) => {
     e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => res)));
     return;
   }
-  // NEVER cache private: /, /class/*, /auth/*, /discuss/*, /push/*, /manifest.json, /sw.js
-  return; // network-only passthrough
+  return; // network-only passthrough; never cache /, /class/*, /auth/*, /discuss/*, /push/*, /manifest.json, /sw.js
 });
 self.addEventListener("push", (e) => {
   let d = {}; try { d = e.data ? e.data.json() : {}; } catch { d = {title: "Новый комментарий"}; }
   const title = d.title || "Новый комментарий";
   e.waitUntil(self.registration.showNotification(title, {
-    body: (d.body || "").slice(0, 140),
+    body: d.body || "",
     icon: "/static/icon-192.png", badge: "/static/icon-192.png",
     tag: d.tag || ("cid-" + d.cid), renotify: true,
     data: {url: d.url || ("/class/" + d.cid), cid: d.cid, comment_id: d.comment_id},
@@ -135,217 +140,85 @@ self.addEventListener("notificationclick", (e) => {
   e.notification.close();
   const url = (e.notification.data && e.notification.data.url) || "/";
   e.waitUntil(clients.matchAll({type: "window", includeUncontrolled: true}).then((ws) => {
-    for (const w of ws) { if (w.url.includes(new URL(url, location.origin).pathname)) { return w.focus(); } }
+    for (const w of ws) { try { if (new URL(w.url).pathname === new URL(url, location.origin).pathname) return w.focus(); } catch(_) {} }
     return clients.openWindow(url);
   }));
 });
 self.addEventListener("pushsubscriptionchange", (e) => {
-  // Q1B 2026-09-22: best-effort only. SW has NO document.cookie / localStorage (throws) and no bundled key.
-  // Auth via sid cookie (credentials:include) + validSameOrigin; POST /push/resubscribe is CSRF-exempt by design.
-  // Safari rarely fires this event — page-load migration (§ below) is the primary healer. Offline → swallow.
   e.waitUntil((async () => {
     try {
       const k = await fetch("/push/vapid-key", {credentials: "include"}).then((r) => { if (!r.ok) throw new Error("key"); return r.json(); });
       const sub = await self.registration.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(k.key)});
       const j = sub.toJSON();
       await fetch("/push/resubscribe", {method: "POST", credentials: "include", headers: {"Content-Type": "application/json"}, body: JSON.stringify({old_endpoint: (e.oldSubscription && e.oldSubscription.endpoint) || "", endpoint: sub.endpoint, keys: j.keys, device: {ua: navigator.userAgent}})});
-      // NOTE: SW must NOT touch localStorage (page owns vapid_key_fp/push_uid/push_cids).
-    } catch (_) { /* leave old row: next webhook 410-prunes if dead, next page visit heals via page-load migration */ }
+    } catch (_) { /* next webhook 410-prunes if dead, next page visit heals */ }
   })());
 });
 ```
 
-- `GET /offline.html`: new Gate-served static shell (generic, **no user data**, `public,max-age=3600`): `Нет соединения. Проверьте интернет — обсуждения появятся, когда сеть вернётся.` + link `/`. SW serves it as `fetch` fallback only for navigations when network throws (never from cache for private HTML — only this generic page).
-- Page JS helpers (normative for implementer): `urlBase64ToUint8Array` (base64url → Uint8Array for `applicationServerKey`), `csrfFromCookie` (page-only: read `__Host-csrf` from `document.cookie` — cookie is deliberately non-`HttpOnly`, same as `admin` flow; never called from SW). Page-load logic on logged-in `/` + `/class/*` (silent, no permission prompt unless fresh subscribe):
+- `GET /offline.html`: Gate-served from `gate/static/offline.html` (`handlers.handleOffline`, `public,max-age=3600`, `text/html`): generic `Нет соединения. Проверьте интернет — обсуждения появятся, когда сеть вернётся.` + link `/`. No user data, no `{{.FIO}}`. SW serves it as `fetch` fallback only for navigations.
+- Page JS: new `gate/static/push.js` (cached `public,max-age=3600`, SW-cached) holds `urlBase64ToUint8Array`, `csrfFromCookie` (page-only, reads `__Host-csrf` via `document.cookie`), bell logic, page-load migration. `class.html`/`index.html` add `<script src="/static/push.js" defer>` + minimal inline `data-*` (cid, uid) + bell button HTML. SW bundle never contains `localStorage`/`document.cookie` (enforced by unit test).
+- Page-load logic on logged-in `/` + `/class/*` (silent, no permission prompt unless fresh subscribe):
   1. `GET /push/vapid-key` → `fp`; `sub = await pushManager.getSubscription()`.
   2. If `sub==null` → show bell-Off (needs tap).
-  3. If `sub!=null` and `localStorage push_uid != current uid` (shared-computer user change, Q6 2026-09-22) → `await sub.unsubscribe()` + best-effort `POST /push/unsubscribe(old)` + clear `push_uid/push_cids/vapid_key_fp` + show bell-Off (require explicit tap; never auto-inherit USER1 endpoint to USER2).
+  3. If `sub!=null` and `localStorage push_uid != current uid` (shared-computer user change) → `await sub.unsubscribe()` + best-effort `POST /push/unsubscribe(old)` + clear `push_uid/push_cids/vapid_key_fp` + show bell-Off (require explicit tap; never inherit previous user endpoint).
   4. Else if `localStorage vapid_key_fp != fp` (rotation) → `unsubscribe()` → `subscribe(new key)` → `POST /push/unsubscribe(old)` + `POST /push/subscribe(new, same cids from push_cids or "all")` → store new `fp`.
-  5. Else if same `uid` + same `fp` but server row was deleted on logout (relog heal, Q6) → silent `POST /push/subscribe(same endpoint, push_cids or "all")` idempotent upsert with new `sid` (no `subscribe()` call, no prompt). Missing `push_cids` → default `"all"` (server narrows to `allowed`).
-- No background sync / periodic sync in MVP (iOS weak + unnecessary for <20 users). No `show_rss_subscription` change (already `false` in embed). iOS hardening (Apple docs): SW registered unconditionally on page load (cheap, works in tab); `Notification.requestPermission()` ONLY inside bell-tap handler, synchronously, never on load/scroll/timeout; `pushManager.subscribe({userVisibleOnly:true, ...})` (Apple rejects `false`); every `push` handler ends in `showNotification()` before `waitUntil` settles (Apple revokes silent push).
+  5. Else (same `uid` + same `fp`): best-effort idempotent `POST /push/subscribe(same endpoint, push_cids or "all")` on every load (no `subscribe()` call, no prompt). Heals server-deleted rows after relog/revoke/restart. Missing `push_cids` → `"all"`.
+- No background sync / periodic sync in MVP. iOS hardening: `Notification.requestPermission()` only inside bell-tap handler synchronously; `userVisibleOnly:true`; every `push` ends in `showNotification`.
 
-## 7. Push pipeline (D2 — the core)
+## 7. Push pipeline
 
 ### 7.1 Keys + env (VPS `.env` only, never repo)
 
 | Key | Note |
 |-----|------|
-| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_PUBLIC_KEY_OLD` | base64url P-256 pair, generated once via `webpush.GenerateVAPIDKeys()`, helper `go run ./gate/cmd/genvapid` (Q3 2026-09-22: `gate/push/` stays library, generator is separate `package main`). `config.Load` fail-fast if any of `VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY/VAPID_SUBJECT/PUSH_WEBHOOK_SECRET` missing (Q4 2026-09-22, no degraded mode). Current public (+`fp` = `hex(sha256([]byte(public base64url string)))[:8]`, Q2 2026-09-22 — hash the string bytes, not decoded point; no literal `v1`, backfill missing rows to current `fp8`) served at `/push/vapid-key`; private never leaves VPS. Rotation (RFC 8292 §4.2 — subscription bound to subscribe-time public key, mismatch → 403; server must remember per-sub key): `push_subs` stores `key_version`; sender signs each sub with its own version's private. MVP = single active key (`_OLD` empty → all sends use current; migration paths ship as no-ops). Future rotation: new → current for fresh subscribes, old kept for sends to old rows, clients migrate on next visit/`pushsubscriptionchange` (unsubscribe-before-resubscribe — `subscribe()` with a different key while old exists throws), retire old only when old-version count → 0. Documented in runbook; no dual-send (each push sent exactly once, with its row's key). Approved 2026-09-21, corrected 2026-09-22. |
-| `VAPID_SUBJECT` | `mailto:mjgavrilov@gmail.com` (RFC 8292 `sub` contact, must keep `mailto:` scheme — bare email rejected by Apple's stricter VAPID check; teacher-confirmed 2026-09-21). |
-| `PUSH_WEBHOOK_SECRET` | 32B hex (`openssl rand -hex 32`), shared: Gate env ↔ remark42 `NOTIFY_WEBHOOK_HEADERS` (headers format `Header1:Value1,Header2:Value2`, split on first `:`, hex has no comma — safe). |
-| remark42 additions | `NOTIFY_ADMINS=webhook`, `NOTIFY_WEBHOOK_URL=http://gate:8081/push/webhook` (internal docker DNS!), `NOTIFY_WEBHOOK_TEMPLATE={"site":{{.Locator.SiteID \| escapeJSONString}},"page_url":{{.Locator.URL \| escapeJSONString}},"comment":{"id":{{.ID \| escapeJSONString}},"parent_id":{{.ParentID \| escapeJSONString}},"user_id":{{.User.ID \| escapeJSONString}},"user_name":{{.User.Name \| escapeJSONString}},"text_html":{{.Text \| escapeJSONString}},"text_orig":{{.Orig \| escapeJSONString}},"created_unix":{{.Timestamp.Unix}},"score":{{.Score}}}}`, `NOTIFY_WEBHOOK_HEADERS=Content-Type:application/json,X-Push-Webhook-Secret:${PUSH_WEBHOOK_SECRET}`, `NOTIFY_WEBHOOK_TIMEOUT=5s`, `NOTIFY_QUEUE=200`. `TRUSTED_PROXY` unchanged. Template context = `store.Comment` (only func = `escapeJSONString`, unquoted — it emits `json.Marshal` quotes itself); `Text` = sanitized HTML, `Orig` = raw markdown (snippet prefers `Orig`, falls back to tag-stripped `Text`); `Timestamp.Unix` numeric. D0 spike proves verbatim (especially `.Timestamp.Unix` method call + `.Orig` populated + valid JSON on quotes/newlines/emoji). |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_PUBLIC_KEY_OLD` | base64url P-256 pair via `webpush.GenerateVAPIDKeys()`, helper `go run ./gate/cmd/genvapid` (`package main` in `gate/cmd/genvapid/main.go`). `config.Load` fail-fast if `VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY/VAPID_SUBJECT/PUSH_WEBHOOK_SECRET` missing (no degraded mode). Public validation: base64url decodes to 65B uncompressed point `0x04…`; private to 32B. Fingerprint `fp8 = hex(sha256([]byte(public base64url string)))[:8]` (hash string bytes; helper `config.VapidFP8`). Served at `/push/vapid-key`; private never leaves VPS, never in DB. Rotation: `push_subs` stores `key_version`; sender signs each sub with its row key. MVP single active key (`_OLD` empty → all sends use current; migration paths ship as no-ops). Future: new → current for fresh subscribes, old kept for old rows, clients migrate via unsubscribe-before-resubscribe, retire old when old-version count → 0. No dual-send. Documented in runbook. |
+| `VAPID_SUBJECT` | `mailto:mjgavrilov@gmail.com` (RFC 8292 `sub` contact; `mailto:` or `https://` required, bare email rejected). |
+| `PUSH_WEBHOOK_SECRET` | 32B hex (`openssl rand -hex 32`, 64 hex chars). Shared Gate env ↔ remark42 `NOTIFY_WEBHOOK_HEADERS`. |
+| remark42 | `NOTIFY_ADMINS=webhook`, `NOTIFY_WEBHOOK_URL=http://gate:8081/push/webhook` (internal docker DNS), `NOTIFY_WEBHOOK_TEMPLATE={"site":{{.Locator.SiteID \| escapeJSONString}},"page_url":{{.Locator.URL \| escapeJSONString}},"comment":{"id":{{.ID \| escapeJSONString}},"parent_id":{{.ParentID \| escapeJSONString}},"user_id":{{.User.ID \| escapeJSONString}},"user_name":{{.User.Name \| escapeJSONString}},"text_html":{{.Text \| escapeJSONString}},"text_orig":{{.Orig \| escapeJSONString}},"created_unix":{{.Timestamp.Unix}},"score":{{.Score}}}}`, `NOTIFY_WEBHOOK_HEADERS=Content-Type:application/json,X-Push-Webhook-Secret:${PUSH_WEBHOOK_SECRET}`, `NOTIFY_WEBHOOK_TIMEOUT=5s`, `NOTIFY_QUEUE=200`. `TRUSTED_PROXY` unchanged. `Text` = sanitized HTML, `Orig` = raw markdown (snippet prefers `Orig`). |
 
-Why `http://gate:8081` (not `https://stepik…`): webhook originates inside `app` net; hairpinning via Caddy/edge would need auth + adds latency + leaks secret to edge logs. Internal direct is faster and invisible to CF.
+Internal `http://gate:8081` avoids Caddy/edge hairpin (faster, secret invisible to CF/edge logs).
 
-### 7.2 Subscribe UX (per-class, RU)
+### 7.2 Subscribe UX + RU strings + consent
 
-On `/class/<cid>` (logged-in only): bell button `🔔 Уведомлять о новых комментариях [Вкл/Выкл]` + permission state text. Flow (user gesture → `Notification.requestPermission()` synchronously in tap handler → `GET /push/vapid-key` → `pushManager.subscribe({userVisibleOnly:true, applicationServerKey})` → `POST /push/subscribe` with `cids:[cid]` → store `push_uid=uid, push_cids, vapid_key_fp=fp` in `localStorage`). Pre-flight gating: `if (!('PushManager' in window) || (iOS && !standalone))` show iOS-hint string instead of bell-active (no dead button). On `/` (logged-in): list-level toggle `Уведомлять обо всех моих классах` (`cids:"all"` resolves server-side via `BestSessionForUID(uid)` at send time — not at subscribe time, so left-class revoke takes effect immediately, see §7.4). Bell reflects this-device `getSubscription()`, not server-global.
+On `/class/<cid>` (logged-in): bell `🔔 Уведомлять о новых комментариях [Вкл/Выкл]` + permission state. Flow: user gesture → `Notification.requestPermission()` synchronously → `GET /push/vapid-key` → `pushManager.subscribe({userVisibleOnly:true, applicationServerKey})` → `POST /push/subscribe` with `cids:[cid]` → store `push_uid/push_cids/vapid_key_fp` in `localStorage`. Pre-flight: if `!('PushManager' in window)` or iOS-not-standalone → show iOS-hint instead of active bell. On `/` (logged-in): list toggle `Уведомлять обо всех моих классах` (`cids:"all"`, expanded server-side at send time). Bell reflects this-device `getSubscription()`, not server-global. Unsubscribe removes endpoint row; disable one class = `POST /push/subscribe` narrowed array.
 
-RU copy (frozen):
+RU copy:
 - Enable: `Уведомлять о новых комментариях`
 - Granted: `Уведомления включены на этом устройстве.`
 - Denied: `Уведомления заблокированы в браузере. Разрешите их в настройках сайта, затем попробуйте снова.`
 - iOS-not-installed: `На iPhone уведомления приходят только из приложения на экране «Домой» (Поделиться → На экран «Домой»).`
 - Error: `Не удалось включить уведомления. Попробуйте позже.`
+- Bell-Off: `Уведомления выключены на этом устройстве. Выход также отключает их на этом устройстве.`
 
-Unsubscribe removes endpoint row; disabling one class = `POST /push/subscribe` with narrowed `cids` array (no `PATCH`; server filters `⊆ allowed`).
+Login consent (`handlers.RUConsent`, shown above button): existing text + `Если включите уведомления, браузер получит технический ключ для доставки оповещений о новых комментариях в ваших классах. Уведомления доставляются через сервис push вашего браузера (Google/Apple/Mozilla) — текст уведомления будет передан ему для показа. Отключить можно в любой момент на странице класса.`
 
-### 7.3 Fan-out worker (Gate, `gate/push/` new package)
+### 7.3 Fan-out worker (`gate/push` + `gate/handlers` wrappers)
 
-- BoltDB buckets: `push_subs[hex(sha256(endpoint))] → {uid, sid, endpoint, p256dh, auth, cids|all, ua, key_version: fp8, created_at, last_ok_at, fail_count}`, `push_meta{vapid_public, vapid_private_ref}` (private key stays in env, never in DB), `push_queue` in-memory channel (cap 512, `NOTIFY_QUEUE=200` is remark42-side, frozen) + worker pool **4 senders sequential (in-flight=4, Q5 2026-09-22 — drop the old "8" number)**, **separate limiter from Stepik outbound 4r/s** (Stepik budget untouched; 256M gate fits, measured in Wave P1 via `docker stats`). New `Store.SessionsForUID(uid)` (full-bucket scan, skip corrupt — precedent: `StripClass`) + `BestSessionForUID(uid)` (freshest `LastVerifiedAt`, expiry + version/epoch checked); teacher `IsTeacher → always allowed`. Title cache: in-memory `cid → title` mutex map in `gate/push`, populated at subscribe + login/refresh from `ClassTitles`, fallback `Класс <cid>`, lost on restart (no Stepik hot-path calls). `handleLogout` deletes rows where `sid == logged-out sid` (per-device, Q6); `revoke-class/revoke-user/logout-all` prune/shrink rows synchronously at revoke time (not just send-time).
-- Webhook handler: `MaxBytesReader` 64KB → parse → `cid = ExtractCID(page_url)` → drop if unknown/`site != SITE` → snippet = `text_orig` primary else tag-stripped `text_html`, truncated 120 runes server-side → enqueue `{cid, comment_id, author_stepik_id (strip `stepik_` prefix), author_name (from `user_name`, fallback below), snippet, page_url}`. Worker: for each job, list subs where (`cids=="all"` OR `cid ∈ cids`) AND `uid != author_uid` (don't notify self) AND send-time ACL (Q6 2026-09-22: logged-out device gets nothing because its row was deleted on logout; if row exists + `BestSessionForUID(uid)` present → require `cid ∈ AllowedClassIDs || IsTeacher`, else `log push_skip_revoked`; if row exists + absent (all sessions expired, not logged-out) → push from stored `cids` to keep pushes alive across expiry) — stale ≤48h accepted, definitive revoke already pruned/shrunk rows → `webpush.SendNotification(payload, sub, {VAPID keys by row key_version, Subscriber: VAPID_SUBJECT, TTL: 86400, Urgency: normal, Topic: class-<cid>})` (exactly one send per sub, never dual-send). Author FIO = webhook `user_name` primary, `BestSessionForUID(author_uid).FIO` fallback, else `"Новый комментарий"`. Title from `cid → title` cache (§3), fallback `Класс <cid>`.
-  - Payload JSON (≤2KB): `{title: "<Class title> — новый комментарий", body: "<Author FIO>: <snippet 120 chars>", cid, comment_id, url: "/class/<cid>#remark-<comment_id>", tag: "cid-<cid>"}`. **No avatar bytes, no tokens.** `Collapse by Topic` so 10 rapid comments → 1 visible notification (renotify).
-- Delivery bookkeeping: `410 Gone / 404` from push service → delete sub immediately (`log push_prune expired`); `403` → log `push_403_key_mismatch` (signals rotation needed, never auto-delete — key mismatch ≠ dead endpoint); transient (429/5xx/timeout) → `fail_count++`, non-blocking requeue with `not_before` delay 3× (1s, 30s, 5m, honor `Retry-After` header when present; worker never sleeps 5m inline — parks job and continues, Q5 2026-09-22), then park until next webhook (don't delete — mobile offline is normal); log `push_send {uid_hash8=hex(sha256(uid))[:8], cid, endpoint_hash8=hex(sha256(endpoint))[:8], status, latency_ms}` — **never log full endpoint or keys** (endpoint is a bearer secret).
-- Rate guard: per-`cid` coalesce window 30s via in-memory `cid → {count, first_snippet, author_names, timer}` (Q5 2026-09-22). First comment arms `time.AfterFunc(30s, flush)`; subsequent enqueues for same `cid` only bump `count` (author excluded per-comment at flush: if all coalesced comments are self-only for a given sub, skip that sub). Flush builds single payload if `count==1`, else `{title: "<Class title>", body: "N новых комментариев в <Class>", cid, comment_id: latest, url: "/class/<cid>#remark-<latest>", tag: "cid-<cid>"}`. Prevents spam during lively threads. Timers lost on restart — accepted (next comment re-arms).
-- CSRF/rate audit (2026-09-21, amended Q1B 2026-09-22): `POST /push/subscribe|unsubscribe` reuse `admin.Admin` pattern — `validSameOrigin` + `VerifyHeaderCSRF` + per-`sid` `AllowPush`; `POST /push/resubscribe` is `validSameOrigin` + `sid` + `AllowPush` only (CSRF-exempt — SW cannot send `X-CSRF-Token`; `SameSite=Lax` + Origin is sufficient, see §4). No change to `/auth/me` shape needed.
+- Storage: BoltDB `push_subs[hex(sha256(endpoint))] → {uid int64, sid string, endpoint, p256dh, auth, cids []int64 + all bool, ua string, key_version fp8, created_at, last_ok_at time.Time, fail_count int}`, `push_meta{vapid_public, fp8}` (private never in DB). `push_queue` in-memory channel cap 512; worker pool 4 senders (in-flight 4), separate from Stepik outbound limiter.
+- Sessions: `Store.SessionsForUID(uid)` (full-bucket scan, skip corrupt) + `BestSessionForUID(uid)` (filter `ExpiresAt>now && UserVersion==current && GlobalEpoch==current`, pick freshest `LastVerifiedAt`; `nil` if none). Teacher `IsTeacher` does not bypass expiry.
+- Title cache: in-memory `cid → title` mutex map in `gate/push`, set from `session.ClassTitles` at `POST /push/subscribe`, `handleCallback` login, and `resolveHTMLSession` success after `EnsureFresh`. Send path only reads; fallback `Класс <cid>`; lost on restart.
+- Webhook handler: `MaxBytesReader` 64KB → parse → `cid = ExtractCIDWithConfig("", page_url, cfg.ClassBase(), cfg.EmbedHost())` → drop if unknown or `site != SITE` (`warn push_webhook_bad_url/site`) → `author_uid` = strip `stepik_` prefix + `ParseInt` (fail → `0`, log `push_webhook_bad_author`) → snippet = `Orig` primary else tag-stripped `Text` (`<[^>]*>` → `` + `html.UnescapeString`, collapse whitespace, trim, 120 runes; empty → `Новый комментарий`) → enqueue `{cid, comment_id, author_uid, author_name, snippet, page_url}`.
+- Send: for each job, for each sub: skip if `sub.uid == author_uid`; if `BestSession` present require `IsTeacher || cid ∈ AllowedClassIDs` else `push_skip_revoked`; if absent push only from stored array (`cid ∈ sub.cids`); stored `"all"` + absent → skip, except teacher (`uid == TEACHER_ID`) → push. Subscribe-time `cids ⊆ allowed` + send-time live check (defense in depth). Exactly one send per sub with its row key via `SendNotificationWithContext(ctx10s, payload, sub, {Subscriber: VAPID_SUBJECT, TTL: 86400, Urgency: normal, Topic: class-<cid>})`.
+- Author: webhook `user_name` primary, `BestSessionForUID(author_uid).FIO` fallback, else `""` (body = snippet alone). Title: `"<Class title> — новый комментарий"` single, `"<Class title>"` summary. Payload JSON ≤2KB (`len(json)>2048` → cut snippet). No avatar bytes, no tokens.
+- Delivery: `410/404` → delete immediately (`push_prune expired`); `403` → `push_403_key_mismatch` (never auto-delete); transient (429/5xx/timeout/`DeadlineExceeded`) → `fail_count++`, non-blocking requeue via `time.AfterFunc(delay, requeue)` with delays `[1s,30s,5m]`, honor `Retry-After` (cap 5m); after 3x park until next webhook. Worker never sleeps inline. Log `push_send {uid_hash8=hex(sha256(uid))[:8], cid, endpoint_hash8=hex(sha256(endpoint))[:8], status, latency_ms}`; never log endpoint/keys/snippet. Webhook log only `cid,comment_id,author_uid,sub_count`.
+- Coalesce: per-`cid` `type coalesce struct {count int; latestID string; authorUIDs []int64; timer *time.Timer}` + mutex map. First comment for idle `cid` sends immediately + `count=1` + 30s window; further in window bump `count/latestID/authors`; flush: `count==1` → nothing more; `count>1` → one summary `N=count (total)` with same `tag:cid-<cid>` + `renotify:true` (visible collapses to 1). Author excluded per-sub at immediate + flush. Timers lost on restart.
+- Subscribe validation: `endpoint` parses URL, `scheme==https`, `host!=""`, `len<2048`; `p256dh` 87–88 chars base64url decode-check, `auth` 22–24 chars decode-check; `cids` array requires every `cid ∈ session.allowed` (or teacher) else `403` whole request; `"all"` allowed; `device.ua` truncate 256, `device.name` optional 64.
+- CSRF/rate: `subscribe|unsubscribe` = `validSameOrigin` + `VerifyHeaderCSRF` + `AllowPush(sid)` (`Every(3s)`, burst 20); `resubscribe` = `validSameOrigin` + `sid` + `AllowPush` only.
+- Prune wiring: `handleLogout` deletes rows where `sid==logged-out sid`; `admin.logoutAll` deletes all rows (epoch invalidates all); `admin.revokeUser` deletes rows for target `uid`; `admin.revokeClass` shrinks arrays, deletes single-`[cid]` rows and all `"all"` rows for that `uid` (re-subscribed as new allowed on next heal). Hourly sweep (session sweeper ticker): delete `fail_count>10 && last_ok>30d` + `no live session && last_ok>7d`.
 
-### 7.4 Privacy / isolation (normative)
+### 7.4 Privacy / isolation
 
-- Push never bypasses class ACL: send-time check via `BestSessionForUID` (local read). Present + `cid ∉ allowed` (+ not teacher) → suppress (history stays per 0001 §5, but push stops). Absent (all sessions expired, row still exists because no explicit logout) → push from stored `cids` to keep pushes alive across expiry. Explicit logout deletes that `sid`'s rows immediately (Q6 2026-09-22: logged-out device gets nothing, even if same `uid` still live on another device). `logout-all`/`revoke-user` bumps epoch/version + prunes rows; hourly sweep (same ticker as session sweeper) deletes `fail_count>10 && last_ok>30d` + `no live session && last_ok>7d` rows. `revoke-class` shrinks `allowed` + prunes/shrinks rows synchronously → next send suppresses immediately. Shared-computer: USER1 logout deletes `E`; USER2 login with same browser `E` hits user-change guard (§6 step 3) — unsubscribe + require tap, never inherits USER1 pushes.
-- Webhook payload contains comment snippet — treated as private: Gate logs only `cid, comment_id, author_uid, sub_count`, never snippet text. Push payload snippet truncated 120 chars (same data member would see on page, but new transit via FCM/APNs/Mozilla push services + new copy at rest there — disclosed in consent §9).
-- `VAPID_PRIVATE_KEY` + `PUSH_WEBHOOK_SECRET` in VPS `.env` only (`chmod 600`), never in `deploy/.env.example` values (keys only). `docker compose exec gate printenv … | sha256sum` hash-compare debug pattern (runbook §8.3 style), values never leave VPS.
-- 152-FZ/minors: no new PII collected (endpoint+p256dh+auth are device keys, not child data; stored per-uid+sid, deletable via bell-Off Unsubscribe + per-device delete on `POST /auth/logout` + user-change guard). Consent line extended (see §9, teacher-approved 2026-09-21). Bell-Off RU: `Уведомления выключены на этом устройстве. Выход также отключает их на этом устройстве.`
+- Push never bypasses class ACL (send-time matrix above). Explicit logout deletes that `sid` rows → logged-out device gets nothing even if same `uid` live elsewhere. Shared-computer user change forces untap, never inherits.
+- Webhook snippet treated as private: logs exclude snippet; push transit via FCM/APNs/Mozilla disclosed in consent.
+- Secrets in VPS `.env` only (`chmod 600`), keys only in `deploy/.env.example`. Debug via hash-compare (`printenv … | sha256sum`), values never leave VPS.
+- 152-FZ/minors: endpoint+p256dh+auth are device keys (not child data), per-uid+sid, deletable via bell-Off + per-device logout + user-change guard.
 
-## 8. Caddy + Cloudflare + compose delta (minimal)
+## 8. Caddy + Cloudflare + compose
 
-- `deploy/Caddyfile`: enumerated `handle /push/vapid-key*`, `handle /push/subscribe*`, `handle /push/unsubscribe*`, `handle /push/resubscribe*` (plain `reverse_proxy gate:8081`) + `handle /push/health*` with `header_up X-Gate-Auth` + `handle /push/webhook* { respond "Not found" 404 }` + own `handle /offline.html` (not `@static` edit — otherwise SW `cache.add("/offline.html")` 404s and install fails; safe pick Q7). Keep `request_header CF-Connecting-IP {client_ip}` + rate-limit IP chain. No change to `/discuss/*` auth, strip rules, or healthcheck listener. After edit: `deploy/caddy-verify.sh` (extended per §4) + container `caddy validate` (AGENTS.md exact forms).
-- `deploy/compose.yml`: remark42 env += `NOTIFY_ADMINS=webhook`, `NOTIFY_WEBHOOK_URL=http://gate:8081/push/webhook`, `NOTIFY_WEBHOOK_HEADERS=Content-Type:application/json,X-Push-Webhook-Secret:${PUSH_WEBHOOK_SECRET}`, `NOTIFY_WEBHOOK_TIMEOUT=5s`, `NOTIFY_QUEUE=200`, `NOTIFY_WEBHOOK_TEMPLATE=<frozen §7.1>`; gate env += `VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_PUBLIC_KEY_OLD, VAPID_SUBJECT, PUSH_WEBHOOK_SECRET`. No new services, no `ports:` changes, resource limits unchanged (`gate 256M/128M` — push worker fits; measured separately in Wave P1 via `docker stats`).
-- `deploy/.env.example`: keys only (`VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_PUBLIC_KEY_OLD, VAPID_SUBJECT, PUSH_WEBHOOK_SECRET`, `NOTIFY_*` refs). Secrets never committed.
-- Cloudflare: existing hostname Bypass already covers `/push/*`, `/sw.js`, `/manifest.json`, `/offline.html`. Verify `cf-cache-status: BYPASS/DYNAMIC` on each in TESTLOG. No new Page Rules needed.
-
-## 9. Consent + RU strings (amends 0001 §5.2, teacher approves)
-
-Login page consent append (teacher-approved 2026-09-21): `Если включите уведомления, браузер получит технический ключ для доставки оповещений о новых комментариях в ваших классах. Уведомления доставляются через сервис push вашего браузера (Google/Apple/Mozilla) — текст уведомления будет передан ему для показа. Отключить можно в любой момент на странице класса.`
-
-Full RU list (§7.2 + errors): `Сессия истекла…` / `Слишком много запросов…` reuse 0001 §5.3; new push-only strings in §7.2 frozen.
-
-## 10. Browser test plan (Wave P1 — PWA, Wave P2 — push; append to TESTLOG.md)
-
-P1 (installability, no push yet — Gate serves manifest + real SW, webhook disabled):
-1. Desktop Chrome `chrome://apps` + DevTools Application→Manifest (no errors, 192+512 present, `standalone`), Lighthouse PWA ≥90.
-2. Android Chrome: `beforeinstallprompt` → Install → launches `standalone` (`?source=pwa` in Gate log), icon correct, back button stays in app.
-3. iPhone Safari (real device, iOS ≥16.4): Share → Add to Home Screen → opens `standalone`; pre-install push toggle shows iOS-hint string; post-install `Notification.requestPermission()` prompt appears on tap (not on load).
-4. Offline: airplane mode → `/static/style.css` loads from SW cache, `/` shows `/offline.html` (generic, no user data), `/class/<cid>` network-only fails safe (no stale private HTML served). `cf-cache-status` recorded for `/manifest.json`, `/sw.js`, `/offline.html`, `/push/vapid-key`.
-5. Caddy contracts still green: `deploy/caddy-verify.sh` + §8 items 1–7 from 0001 (teacher/student/outsider/leave/JWT/CF/path) — push must not regress auth.
-
-P2 (push end-to-end, webhook enabled, 2 test users minimum — teacher validates on real iPhone + Android, Q8 2026-09-22):
-6. Student A subscribes on `/class/<cid>` (granted, `localStorage push_uid=A`) → Student B posts comment → A receives notification <30s (foreground closed) with correct title/body/deep-link; click focuses/opens `/class/<cid>#remark-<id>`. Gate log `push_send uid_hash8 cid endpoint_hash8 status=201`.
-7. Self-notify suppressed (B gets nothing for own comment); outsider/revoked user gets nothing (revoke A via `revoke-class`, B posts → no push to A + `log push_skip_revoked`; re-join → push resumes).
-7b. Logout silence (Q6): A logs out on device1 → B posts → device1 gets nothing (row deleted); device2 same A still logged in gets it. A re-logs device1 (same browser `E`, silent heal) → next B post fires again without re-tap. Shared-computer: A logs out, B logs in same profile without tap → B gets nothing for A's classes and nothing for own until tap; after B taps, B gets own only (no A leak).
-8. Multi-device: A subscribes on 2 browsers → both fire; unsubscribe one → only remaining fires.
-9. Denied/expired: deny permission → RU denied-string; delete sub via devtools `pushManager.unsubscribe()` → next webhook gets `410` → Gate prunes row (log `push_prune expired`).
-10. Burst: 5 comments in 30s → 1 coalesced notification (`N новых комментариев`).
-11. Teacher `"all"` sub gets pushes for every owned class; student `"all"` only for own `allowed`.
-12. Resource: `docker stats` gate <256M during burst; `go test -count=1 ./...` + `go vet` green.
-
-## 11. Build phases
-
-- **D0 — spike (0.5d, standalone, before Gate changes, implementer runs):** minimal Go sender with `webpush-go v1.4.0` + real browser subscription (manual `vapid-key` dump) → prove VAPID send → notification shows on Android + iOS-HS (teacher provides devices for P1/P2, implementer proves with desktop + logs for D0); plus live remark42 webhook dump (ephemeral secret, `spike/` style, never committed) proving the frozen §7.1 template verbatim: parses (no `truncate`), emits valid JSON on quotes/newlines/emoji, `.Timestamp.Unix` numeric, `.Orig` populated, headers `Content-Type + secret` received. Verdict (one paragraph) appended here; split to `plans/0004-push-spike.md` only if >1 page (0003 is teacher Telegram, already exists). Gates D1. Exit: template string locked, no further template debate in D2.
-- **D1 — PWA shell (1d):** real `sw.js` (§6 Q1B-corrected, no `localStorage`/`document.cookie` in SW + page helpers `push_uid/push_cids/fp` + user-change guard) + `/offline.html` via own Caddy handle + manifest upgrade (`id:/`, split `any`/`maskable`, verify-or-regenerate maskable) + templates install UX + page-load migration/silent-heal + enumerated Caddy handles (Q7 safe pick) + `/push/vapid-key|subscribe|unsubscribe|resubscribe|health` stubs (`config.Load` fail-fast on missing VAPID_*, store rows with `sid+fp8`, fan-out no-op `log push_noop_no_event`) + `gate/cmd/genvapid` + `AllowPush(Every 3s, burst 20)` + CF verify. Acceptance: Wave P1 green (teacher on iPhone+Android). No webhook yet.
-- **D2 — push pipeline (2d):** `gate/push/` library package (`subscribe/unsubscribe/resubscribe/vapid-key/webhook/worker` + `SessionsForUID`/`BestSessionForUID` + title cache + per-`sid` logout delete + revoke prune), BoltDB buckets (`sid` + `key_version: fp8` per row), remark42 `NOTIFY_*` compose wiring (single-quoted template, frozen, no edits without D0 re-verdict), per-`cid` coalesce `{count, timer}` + non-blocking retry + `403-key-mismatch` log + per-device logout semantics (Q6) + RU strings + consent line. Acceptance: Wave P2 green (items 6–12 + 7b).
-- **D3 — hardening (0.5d):** rotation runbook § (single-key MVP + future overlap procedure, `_OLD` reserved, `fp8 = hex(sha256([]byte(public string)))[:8]`), `push/health` deep, runbook §, TESTLOG waves, `caddy-verify.sh` re-run, unit tests: served `sw.js` allowlist (no `caches.add('/')`, no `/class`) + no `localStorage`/`document.cookie` in SW bundle + webhook validation (rejects `http:` endpoint, bad keys, oversize body) + `BestSessionForUID` ACL matrix + logout-deletes-only-that-sid + user-change guard, `govulncheck` CI job, `docker stats` evidence. Merge.
-- Deferred to later: teacher Telegram channel — design frozen in `plans/0003-teacher-telegram.md`, implementation deferred (needs teacher to create bot via BotFather); lesson-level `…/lesson/<lid>` push (same `cid` fan-out, `url` includes lesson path), email fallback (rejected for minors unless parents request), TWA/Play packaging via PWABuilder.
-
-## 12. Risks
-
-- iOS push requires HS install — students will skip it → mitigate with one-line RU hint + teacher announcement template (`Установите как приложение, иначе уведомления не придут — инструкция на главной`). No auto-prompt (Apple forbids pre-install push).
-- remark42 webhook template drift / `Locator.URL` shape change → Gate `ExtractCID` fail-closed drops event + `warn push_webhook_bad_url` + `push_webhook_gap` counter (no crash, no leak). No poller in MVP (dropped 2026-09-21); outage heals on next comment.
-- Endpoint churn (browser rotates push URLs) → `410/404` prune + `pushsubscriptionchange` (Q1B CSRF-exempt `POST /push/resubscribe`, UPDATE by `old_endpoint`, copy `cids`, fallback INSERT) + page-load migration/silent-heal + user-change guard (§6 steps 3–5); hourly sweep deletes `fail_count>10 && last_ok>30d` + `no live session && last_ok>7d`. `403` = key mismatch (rotation signal), never auto-delete. Explicit `POST /auth/logout` deletes only that `sid`'s rows immediately (Q6 per-device silence).
-- VAPID private leak → rotation per §7.1 (per-sub `key_version`, old kept for old rows, clients migrate via unsubscribe-before-resubscribe; bulk 403 if old deleted early). Single-key MVP: swap + restart is safe only because test scope has no old installs; production rotation MUST overlap. Old key dies only when old-version count → 0.
-- SW cache poisoning private HTML → mitigated by design: SW fetch handler allowlists `/static/*` + `/offline.html` only, navigation-fallback serves only generic `/offline.html`; all else passthrough; `Cache-Control: no-store` on `/sw.js` itself; unit test must assert no `caches.add('/')` or `/class` anywhere (replaces weak `grep -r "caches.*class"`).
-- Single VPS SPOF + push queue in-memory → burst loss on restart accepted (comments remain, next comment re-fires; no `down -v` rule from 0001 still holds).
-- New dep `webpush-go` review: MIT, `SherClockHolmes/webpush-go v1.4.0` (teacher-approved 2026-09-21 interim), ~21 imports, no cgo; pin via `go.mod` + `go.sum`, `go vet` + `govulncheck` in CI. Approval granted per 0001 §5.3.
-
-## 13. Decisions (resolved 2026-09-21, normative — was open questions + review round)
-
-1. Notify scope: **all class members except the comment author** (no thread-participant-only mode in MVP; coalesced 30s per §7.3).
-2. Quiet hours: **none in MVP**. Revisit later only if night spam becomes a problem (then batch into morning digest — deferred, no design frozen here).
-3. Teacher Telegram channel: **design frozen in `plans/0003-teacher-telegram.md` (exists), implementation deferred** (needs teacher BotFather bot + VPS `.env` token).
-4. Test version: webhook-only MVP, no poller, ephemeral secrets ok (site not used by students yet).
-5. Caddy: enumerated `/push/vapid-key|subscribe|unsubscribe|resubscribe|health` + own `handle /offline.html` (Q7 safe pick, not `@static` edit) + explicit `404` for `/push/webhook` at edge + `header_up X-Gate-Auth` only on `/push/health`, extend `caddy-verify.sh` (webhook-404, vapid-401-proves-proxy, offline-200, deep-404-without-token); compose template single-quoted, headers double-quoted for `${PUSH_WEBHOOK_SECRET}`.
-6. SW: navigation-only `/offline.html` fallback + cache-first static; bare `register('/sw.js')`, `STATIC_CACHE = "static-"+REV`; Q1B `pushsubscriptionchange` (fetch-current-key + CSRF-exempt `POST /push/resubscribe`, best-effort swallow, no `localStorage`/`document.cookie` in SW) + page-load migration/silent-heal/user-change-guard + `urlBase64ToUint8Array` (page) / `csrfFromCookie` (page-only); iOS gates (gesture-only permission, `userVisibleOnly:true`, always `showNotification`).
-7. CSRF: `subscribe|unsubscribe` reuse `admin` pattern (`validSameOrigin` + `VerifyHeaderCSRF` reading `__Host-csrf` via `document.cookie` + `AllowPush Every(3s) burst 20` per `sid`); `resubscribe` is Origin+sid only (Q1B — SW cannot send header; `SameSite=Lax` + Origin sufficient); no `/auth/me` change. SW `fetch` uses `credentials:'include'` so `__Host-sid` authenticates resubscribe.
-8. Author FIO: webhook `{{.User.Name}}` primary + `BestSessionForUID` fallback.
-9. Subscribe: `"all"` for students + teacher (send-time expand), per-class disable via narrowed `POST`, no `PATCH`.
-10. Consent extended with push-service (FCM/APNs/Mozilla) transit sentence.
-11. Worker: 4 senders sequential (in-flight=4, Q5 — old "8" dropped), Stepik limiter untouched, in-memory per-`cid` coalesce + non-blocking retry, `push_subs` includes `sid`.
-12. Dep: `webpush-go v1.4.0` approved interim + `govulncheck` in CI.
-13. Manifest: `id:/` stable + `start_url:/?source=pwa`; icons split `any` / `maskable` (verify existing `icon-512-maskable.png`: opaque, 80%-diameter safe zone, else regenerate via Maskable.app Editor).
-14. SW safety: unit test (not grep) asserting allowlist.
-15. Webhook template (2026-09-22, frozen — was open): no `truncate`, `escapeJSONString` unquoted, `text_html` + `text_orig` + `created_unix` numeric, `Content-Type:application/json` header explicit, `NOTIFY_QUEUE=200`.
-16. Send-time ACL (2026-09-22, amended Q6 per-device logout): present → require allowed else suppress + `push_skip_revoked`; absent (expired, row exists) → push from stored `cids`; explicit logout deletes that `sid` rows so logged-out device gets nothing; revoke prunes synchronously.
-17. VAPID (2026-09-22, corrected + Q2 `fp8 = hex(sha256([]byte(public string)))[:8]`, no `v1`): per-sub `key_version`, one send per sub with its key, `403` = mismatch signal; MVP single-key, `_OLD` reserved, unsubscribe-before-resubscribe; generator `gate/cmd/genvapid` (Q3), fail-fast (Q4).
-18. Resubscribe (2026-09-22, amended Q1B CSRF-exempt Origin+sid): UPDATE-by-`old_endpoint` + page-load migration/silent-heal/user-change-guard; SW best-effort, no Sync, no `localStorage` in SW; compat Win/Mac/iOS/Android.
-19. Titles (2026-09-22): in-memory `cid → title` cache, `Класс <cid>` fallback, no Stepik hot-path calls.
-20. Health (2026-09-22): `/push/health` deep needs Caddy `header_up`; shallow public.
-21. Caps (2026-09-22, frozen): webhook 64KB, payload ≤2KB, `Topic: class-<cid>`, `TTL: 86400`, any-`https:` endpoint, queue 512 (gate) / 200 (remark42), 4 workers sequential, 30s coalesce, `AllowPush Every(3s) burst 20`.
-22. Logout silence (2026-09-22, Q6 normative): logged-out device gets nothing (per-`sid` delete); relog silent-heal reuses endpoint; user-change forces untap; bell is per-device.
-
-## 14. Data sources (normative per planning rules — full reference list)
-
-Status of this plan: `REFINED` (not `FINAL`; `FINAL` mark only after mutual approval, then immutable).
-
-A. Local repo (ground truth, read directly):
-- `plans/0001-stepik-discussion-site.md` (§§3–8, §7.4 PWA hook, §5.2 consent, §5.3 limits, §6.1 Gate-JWT verdict + digest pin)
-- `plans/0003-teacher-telegram.md` (deferred teacher channel, `NOTIFY_ADMINS=webhook,telegram` coexistence)
-- `AGENTS.md` (exact `go build/vet/test -count=1`, Caddy validate + `caddy-verify.sh`, proxy/gate contracts)
-- `docs/ops-runbook.md` (§§2/8.2–8.4 Caddy pitfalls + debug, §9 refresh-token ops)
-- `deploy/Caddyfile`, `deploy/compose.yml`, `deploy/.env.example`, `deploy/caddy-verify.sh`
-- `gate/main.go` (`buildRevision()`, embed), `gate/handlers/handlers.go` (`Routes()`, `handleManifest`, `handleSW`, `privateHeaders`), `gate/handlers/htmlsession.go` + `util.go` (`validSameOrigin`), `gate/config/config.go`, `gate/sessions/sessions.go` (buckets, `StripClass` scan precedent, `SetCSRF` non-HttpOnly), `gate/auth/auth.go` (`Guard`, `ExtractCID`), `gate/admin/admin.go` (CSRF pattern), `gate/ratelimit/ratelimit.go`, `gate/templates/index.html` + `class.html` + `error.html`, `gate/static/*`, `go.mod`/`go.sum`, `.github/workflows/ci.yml`, `TESTLOG.md`
-
-B. Upstream code fetched raw (design-critical):
-- `https://raw.githubusercontent.com/umputun/remark42/master/backend/app/notify/webhook.go` — only template func is `escapeJSONString`; no `truncate` (killed the draft template)
-- `https://raw.githubusercontent.com/umputun/remark42/master/backend/app/store/comment.go` — `Comment{ID, ParentID, Text (sanitized HTML), Orig (raw markdown), Locator, Timestamp, Score}`, `Snippet()`, `Sanitize()`
-- `https://raw.githubusercontent.com/umputun/remark42/master/backend/app/store/user.go` — `User{ID, Name, Picture}`
-- `https://raw.githubusercontent.com/go-pkgz/notify/master/webhook.go` — headers split on first `:`, no default `Content-Type`, timeout/queue semantics
-- `https://raw.githubusercontent.com/SherClockHolmes/webpush-go/master/webpush.go` + `https://pkg.go.dev/github.com/SherClockHolmes/webpush-go@v1.4.0` + `https://github.com/SherClockHolmes/webpush-go/releases` + `https://github.com/SherClockHolmes/webpush-go/tree/v1.4.0` — `GenerateVAPIDKeys`, `SendNotification/WithContext`, `Options{Subscriber, TTL, Topic, Urgency, VapidExpiration}`, v1.4.0 CVE-2024-51744 + Content-Length fixes
-
-C. Upstream docs / issues / commits:
-- `https://remark42.com/docs/configuration/notifications/` + `/parameters/` + `/contributing/api/` (webhook vars table, `Comment`/`Locator` shapes, defaults)
-- `https://github.com/umputun/remark42/pull/1878` (webhook vars docs), `.../pull/2077` + commit `9e572fe` (unsafe `default:` tag shadowing safe fallback), commit `95966f6` + `dbae2bb` + PR `1792` + issue `1791` (`escapeJSONString` history), issue `1619` (template usage), `backend/app/cmd/server.go` @ `v1.16.4` + `master` (`NotifyGroup`: `ADMINS/USERS/QUEUE default 100`, `Webhook{URL,TEMPLATE,HEADERS,TIMEOUT 5s}`)
-- `https://pkg.go.dev/github.com/umputun/remark42` (admin vs user notify split)
-
-D. Standards + platform guides:
-- RFC 8292 (`https://datatracker.ietf.org/doc/html/rfc8292` §4.2: subscription bound to subscribe-time key, mismatch → 403, server must remember per-sub key), `draft-ietf-webpush-vapid`, RFC 9749 §5 (key rotation overlap procedure)
-- `https://www.web-push-notifications.com/core-protocols-browser-implementation/vapid-key-generation-rotation/` + `.../rotating-vapid-keys-without-losing-subscribers/` (dual-key overlap, `keyVersion` per row, unsubscribe-before-resubscribe) + `.../safari-ios-web-push-integration/` (Apple strictness: `mailto:` scheme, `userVisibleOnly:false` rejected) + `https://dev.to/137foundry/how-to-handle-pushsubscriptionchange-events-in-production-1ime` (UPDATE-by-`oldEndpoint`, IndexedDB key, offline queue) + `https://github.com/w3c/push-api/issues/291` (key replace needs re-subscribe)
-- MDN: `ServiceWorkerGlobalScope/pushsubscriptionchange_event` (generic Event, not Baseline, `oldSubscription` may be absent, `waitUntil` required), `Making_PWAs_installable`, `Manifest/Reference/{start_url,icons}`, `How_to/Define_app_icons`, `start_url` tracking note
-- Apple: `https://developer.apple.com/documentation/usernotifications/sending-web-push-notifications-in-web-apps-and-browsers` (HS-install + gesture + immediate `showNotification`, no silent push), WebKit blogs `13878` + `13966` (16.4 Web Push), OpenPWA `ios-safari-push` + `platforms/ios-safari` + `reference/manifest/scope` + OneSignal iOS setup + Clarity field report (install prerequisite, `PushManager` undefined in tab, `beforeinstallprompt` never fires on iOS)
-- PWA identity/icons: `https://developer.chrome.com/docs/capabilities/pwa-manifest-id` + `.../lighthouse/pwa/maskable-icon-audit`, `https://web.dev/articles/maskable-icon` (80%-diameter safe zone, opaque, separate file, never `any maskable`), `https://maskable.app/` + `/editor`, MDN `icons`, Chromium `docs/webapps/concepts.md`, W3C `TR/appmanifest`, jsonic manifest guide
-- Caddy: `https://caddyserver.com/docs/caddyfile/directives/{handle,handle_path,route,reverse_proxy}` + `matchers` (mutually exclusive, longest-path-first, `handle_path` strips prefix), community ordering threads
-
-E. Discovery searches used (web search, 2026-09-22; results above are the sources actually relied upon):
-- `remark42 NOTIFY_WEBHOOK_TEMPLATE store.Comment fields`, `remark42 notify webhook template Locator URL User Name example`, `remark42 webhook.go truncate FuncMap escapeJSONString template functions`
-- `SherClockHolmes webpush-go v1.4.0 GenerateVAPIDKeys SendNotification API`
-- `VAPID key rotation web push server change keys resubscribe needed`
-- `Caddy handle vs handle_path matching order reverse_proxy`
-- `iOS Safari web push requirements Home Screen install permission 16.4`, `PWA manifest id start_url scope install criteria Chrome`, `maskable icon safe zone 80% opaque Chrome maskable.app spec`
-
-## 15. Builder refinement 2026-09-22 (normative — security + best UX, ready verdict)
-
-Delegation note: `task` subagents (`requirements-clarifier`, `architect-designer`) failed on free-tier (`OpenCode's free tier can only be used from within OpenCode`), so Builder performed requirements + architecture review directly against repo ground truth (`gate/handlers/handlers.go:Routes/handleManifest/handleSW`, `gate/main.go:buildRevision/embed`, `gate/config/config.go:Load`, `gate/sessions/sessions.go`, `gate/auth/auth.go:Guard/ExtractCID/LoadSession`, `gate/admin/admin.go`, `gate/ratelimit/ratelimit.go`, `deploy/Caddyfile/compose.yml/.env.example/caddy-verify.sh`, `gate/templates/*.html`, `TESTLOG.md`, `go.mod`). No open security question remains; two UX choices below are frozen with rationale (coalesce-immediate-first, separate `push.js`). Verdict: **READY** — implementer starts D0, then D1→D2→D3 per §11 as amended here.
-
-### 15.1 Verdict + what changed vs §§4/6/7/8 (implementer reads this first)
-
-1. Webhook Guard (§7 fix): `auth.Guard` hardcodes `X-Gate-Auth` — webhook MUST NOT reuse it. New `gate/push.VerifyWebhook(r, secret)` checks `X-Push-Webhook-Secret` (constant-time) + same loopback/private peer check as `Guard`, fail-closed `404` (not `401/403`) on either failure, `MaxBytesReader 64KB` before parse. Never routed via Caddy (no Caddy handle for it; edge has explicit `404` block §15.5).
-2. Push API errors are JSON (not HTML): all `/push/*` return `Content-Type: application/json`, `Cache-Control: private,no-store`, `X-Robots-Tag: noindex`, body `{error:<code>}` with `auth_required|forbidden|transient|rate_limited|bad_request`. `401` anon/expired, `403` Origin/CSRF/ACL fail, `429` + `Retry-After` on `AllowPush` deny (reuse `RURateLimited` text inside JSON `error`, not HTML render). No change to `/auth/me` shape.
-3. `sw.js` revision injection wiring: `buildRevision()` lives in `gate/main.go`, `handlers.Server` has no revision field today. D1 MUST add `Revision string` to `handlers.Server` (+ `handlers.New` param) set from `main.buildRevision()`, injected as `const REV="<rev>"` in served `sw.js`. Bare `register('/sw.js')`, no `?v=`. `STATIC_CACHE="static-"+REV`.
-4. Prune wiring (leak fix, critical): `BestSessionForUID==nil` (all sessions expired) → push from stored `cids` is ONLY safe because admin revoke + logout prune rows synchronously. So D2 MUST wire: `handleLogout` deletes `push_subs` where `sid==logged-out sid`; `admin.logoutAll` deletes all `push_subs` for bumped epoch (or all rows — epoch bump invalidates all sessions, so delete all push rows); `admin.revokeUser` deletes all rows for target `uid`; `admin.revokeClass` deletes/shrinks rows for `(uid,cid)` (delete if `cids==[cid]`, shrink array otherwise, delete if `cids=="all"`? No — shrink `"all"` stays `"all"` because send-time check suppresses; but to make revoke immediate even without session, shrink `"all"` is impossible — so delete `"all"` rows? Decision frozen: `revoke-class` shrinks arrays, leaves `"all"` rows in place because send-time `BestSession` present → suppress; for absent case `"all"` would leak, so `revoke-class` MUST also record a tombstone? Simpler frozen rule: `revoke-class` deletes `"all"` rows for that `uid` too (user re-subscribes `"all"` on next visit, re-expanded to new allowed). This closes the absent-`"all"` leak with zero tombstones. Document in runbook. Dependency direction to avoid cycle: `gate/push` is leaf (imports `sessions`, `config` only, never `handlers`/`admin`); `handlers` + `admin` import `push` for prune. `admin.Admin` gets `Push *push.Store` (or func hooks) — implementer picks, no cycle.
-5. Caddy snippets frozen (§15.5): enumerated handles + own `/offline.html` + webhook `404` + health deep `header_up`. After any Caddyfile edit: container `caddy validate` (AGENTS.md exact form) + `deploy/caddy-verify.sh` extended (webhook-404, vapid-401-proves-proxy, offline-200, deep-404-without-token) + `docker compose -f deploy/compose.yml config`.
-6. Coalesce UX fix (best UX, meets P2 `<30s`): §7.3 draft "first arms 30s timer" would delay even single comments to ~30s and flake P2 item 6 (`<30s`). Frozen replacement: **immediate-first + 30s tail-batch**. First comment for idle `cid` sends immediately (no delay); it also opens a 30s window; further comments in window only bump `{count, latest_id, author_names}`; at window end if `count>1` (i.e. ≥1 buffered after the immediate) flush one summary `N новых комментариев`. Single comment → `<5s` latency; burst of 5 in 30s → 2 pushes (1 immediate + 1 summary, same `tag: cid-<cid>` so visible collapses to 1 with `renotify`). Timers in-memory, lost on restart (accepted). Update P2 item 10 expectation to `2 pushes max per 30s window, visible 1`.
-7. Hash defs (log privacy): `uid_hash8=hex(sha256([]byte(strconv.FormatInt(uid,10))))[:8]`, `endpoint_hash8=hex(sha256([]byte(endpoint)))[:8]`. Never log full endpoint/keys/snippet. Webhook log only `cid,comment_id,author_uid,sub_count`.
-8. Send timeout: every `webpush.SendNotification` MUST use `WithContext(ctx10s)` (10s timeout) so one slow push service never parks a worker; transient includes `context.DeadlineExceeded` → `fail_count++` + non-blocking requeue path (§7.3). Worker never `Sleep`s 5m inline — parks job with `not_before` and continues.
-9. `push.js` placement: new `gate/static/push.js` (cached `public,max-age=3600`, SW-cached) holds `urlBase64ToUint8Array`, `csrfFromCookie` (page-only), bell logic, page-load migration (steps §6.1–5). `class.html`/`index.html` add `<script src="/static/push.js" defer>` + minimal inline `data-*` (cid, uid) + bell button HTML (RU frozen §7.2). No `localStorage`/`document.cookie` in `sw.js` bundle — enforced by unit test (not grep).
-10. Consent constant: D2 updates `handlers.RUConsent` to approved extended text (§9) verbatim; login page shows it above button (existing slot). Bell-Off RU frozen: `Уведомления выключены на этом устройстве. Выход также отключает их на этом устройстве.`
-11. Health counts: `GET /push/health?deep=1` (Guard via Caddy `header_up X-Gate-Auth` only) returns `{ok:true, subs:<bolt count>, queue:<len(chan)>}`; shallow `{ok:true}` public. Separate from `/healthz` (approved).
-12. `govulncheck` CI: add job `govuln: runs-on ubuntu-latest, setup-go, run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...` (or `go run` form). Pin `webpush-go v1.4.0` via `go.mod+go.sum`.
-13. Title cache population (no Stepik hot-path): `push.TitleCache.SetFromSession(sess)` called from (a) `POST /push/subscribe` (from `session.ClassTitles`), (b) `handleCallback` login (all titles), (c) `EnsureFresh` success path (refresh). Webhook/send path only reads cache, fallback `Класс <cid>`. Lost on restart.
-14. Snippet + author fallback (UX): `snippet = Orig primary else tag-stripped Text, trimmed, truncated 120 runes`; strip via `bluemonday`-safe simple tag stripper (`<[^>]*>` → ``) + `html.UnescapeString`, collapse whitespace; if empty → `Новый комментарий`. `author = webhook user_name primary, else BestSessionForUID(author_uid).FIO, else ""` (empty → body=`snippet` alone, not `"Новый комментарий: snippet"`); title always `"<Class title> — новый комментарий"` single, `"<Class title>"` coalesced summary. Payload `≤2KB` enforced (truncate + `len(json)>2048` → cut snippet further).
-15. Subscribe validation frozen: `endpoint` must parse URL, `scheme==https`, `host!=""`, `len(endpoint)<2048`; `p256dh` 87–88 chars base64url, `auth` 22–24 chars base64url (decode-check, not just length); `cids` array → every `cid ∈ session.allowed` (or teacher) else `403` whole request (fail-closed, no silent filter — prevents probing others' cids); `"all"` allowed for student+teacher (send-time expand). `device.ua` truncated 256 chars, `device.name` optional 64 chars. `MaxBytesReader 64KB` on subscribe/unsubscribe/resubscribe/webhook.
-
-### 15.2 Caddy normative diff (copy-paste, then validate)
+`deploy/Caddyfile` (place before final `handle { respond 404 }`, after `/auth/*` block):
 
 ```caddy
-# inside stepik.study67.fyi { ... } — place BEFORE final `handle { respond 404 }`, AFTER /auth/* block:
 handle /offline.html {
   reverse_proxy gate:8081
 }
@@ -371,45 +244,128 @@ handle /push/webhook* {
 }
 ```
 
-Why safe: `handle` blocks mutually exclusive, longest-path-first; no wildcard overlap with `@static` (`/`,`/static/*`,`/manifest.json`,`/sw.js`,`/robots.txt`,`/favicon.ico`) or `/class/*`,`/auth/*`,`/healthz`,`/discuss/*`. Own `/offline.html` handle (not `@static` edit) so `cache.add("/offline.html")` can't 404 on matcher typo. Webhook has no proxy — proves edge can never reach secret even if future wildcard appears. `CF-Connecting-IP` + rate-limit chain unchanged. CF Cache Rule `bypass-private` (hostname `stepik.study67.fyi`) already covers new paths; verify `cf-cache-status: BYPASS/DYNAMIC` on `/push/*`, `/sw.js`, `/offline.html`, `/manifest.json` in TESTLOG P1-4.
+Safe: `handle` mutually exclusive, longest-path-first; no overlap with `@static`, `/class/*`, `/auth/*`, `/healthz`, `/discuss/*`. Webhook has no proxy. `CF-Connecting-IP` + rate-limit chain unchanged.
 
-`caddy-verify.sh` extensions (D1, normative): after existing checks 1–5, add `6: /push/webhook → 404`, `7: /push/vapid-key without cookie → 401` (proves proxying not 404), `8: /offline.html → 200`, `9: /push/health?deep=1 without token → 404` (direct gate deep without `X-Gate-Auth` is 404; via Caddy with `header_up` it becomes 200 shallow/deep per Gate logic — assert at least `≠404` for shallow via Caddy).
+`deploy/compose.yml`: remark42 += `NOTIFY_ADMINS=webhook`, `NOTIFY_WEBHOOK_URL=http://gate:8081/push/webhook`, `NOTIFY_WEBHOOK_HEADERS=Content-Type:application/json,X-Push-Webhook-Secret:${PUSH_WEBHOOK_SECRET}` (double-quoted for expansion), `NOTIFY_WEBHOOK_TIMEOUT=5s`, `NOTIFY_QUEUE=200`, `NOTIFY_WEBHOOK_TEMPLATE='<frozen §7.1>'` (single-quoted, no `$`); gate += `VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_PUBLIC_KEY_OLD, VAPID_SUBJECT, PUSH_WEBHOOK_SECRET`. No new services, no `ports:` changes.
 
-### 15.3 Config + store + ratelimit wiring (exact names)
+`deploy/.env.example`: keys only. Secrets never committed.
 
-- `config.Load` fail-fast additions (no degraded mode): require `VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT, PUSH_WEBHOOK_SECRET`; validate `VAPID_PUBLIC_KEY/PRIVATE_KEY` base64url-decode ok (public 65B uncompressed P-256 point `0x04…`, private 32B), `VAPID_SUBJECT` must start `mailto:` or `https://` (bare email rejected — Apple strict), `PUSH_WEBHOOK_SECRET` must decode 32B hex (64 hex chars). `VAPID_PUBLIC_KEY_OLD` optional (empty = single-key MVP). `fp8 = hex(sha256([]byte(VAPID_PUBLIC_KEY string)))[:8]` (hash string bytes, not decoded point; no literal `v1`; backfill missing rows to current `fp8` on read).
-- `sessions.Open` creates `push_subs`, `push_meta` via `CreateBucketIfNotExists` (no migration, test scope). `push_subs[hex(sha256([]byte(endpoint)))] → {uid int64, sid string, endpoint, p256dh, auth, cids []int64|nil for "all" + all bool, ua string, key_version string fp8, created_at, last_ok_at time.Time, fail_count int}`. `push_meta` stores `{vapid_public string, fp8 string}` for debug (private never in DB).
-- `ratelimit.Store`: add `push map[string]*visitor` + `AllowPush(sid string) (bool,time.Duration)` = `allow(push, sid, Every(3s), burst 20)` (≈20/min/sid). Push handlers return `429 JSON + Retry-After` on deny.
-- `gate/cmd/genvapid/main.go` (`package main`, Q3): calls `webpush.GenerateVAPIDKeys()`, prints `VAPID_PUBLIC_KEY=…`, `VAPID_PRIVATE_KEY=…`, `fp8=…`, `VAPID_SUBJECT=mailto:…` reminder. Never commits output.
-- `SessionsForUID(uid) ([]SessionWithSID, error)`: full-bucket scan, skip corrupt (`ErrCorrupt` → skip, precedent `StripClass`), return `{SID, *SessionRecord}` for `StepikUserID==uid`. `BestSessionForUID(uid) (*SessionRecord, string, error)`: filter `SessionsForUID` by `ExpiresAt>now && UserVersion==current && GlobalEpoch==current` (same checks as `LoadSession`), pick freshest `LastVerifiedAt`; `nil,nil` if none. Teacher `IsTeacher` does NOT bypass expiry here (expired teacher session is absent → push from stored `cids` per §15.4, except `"all"` rule below).
+Cloudflare: hostname Bypass already covers new paths; verify `cf-cache-status: BYPASS/DYNAMIC` on `/push/*`, `/sw.js`, `/manifest.json`, `/offline.html` in TESTLOG.
 
-### 15.4 Send-time ACL matrix (normative, closes absent-"all" leak)
+`caddy-verify.sh` extensions (extend `upstream.py` to emulate: `/push/webhook →404`, `/push/vapid-key` no `__Host-sid` cookie →401 else 200, `/offline.html →200`, `/push/health?deep=1` no `X-Gate-Auth` →404): checks `6: /push/webhook →404`, `7: /push/vapid-key no-cookie →401`, `8: /offline.html →200`, `9: /push/health?deep=1 no-token →404`. After any Caddyfile edit: container `caddy validate` (AGENTS.md exact form) + `deploy/caddy-verify.sh` + `docker compose -f deploy/compose.yml config`.
 
-For each webhook job `{cid, author_uid}` and each sub row:
+## 9. Build steps (implement in order D0 → D1 → D2 → D3)
 
-- If `sub.uid == author_uid` → skip (no self-notify), continue.
-- If `BestSessionForUID(sub.uid)` present (`sess,sid`): require `sess.IsTeacher || cid ∈ sess.AllowedClassIDs` else `log push_skip_revoked` + skip. If `sub.cids=="all"` → allow iff above passes (teacher always passes). Else (`cids` array) → require `cid ∈ sub.cids` AND above ACL (defense in depth: subscribe-time `⊆ allowed` + send-time live `allowed`).
-- If absent (no live session): push from stored `cids` ONLY if `sub.cids` is array and `cid ∈ sub.cids` (stale ≤48h accepted, keeps pushes alive across 6h expiry without Stepik calls). If stored is `"all"` → **skip when absent** (cannot expand safely; next login/heal re-establishes session and pushes resume). Exception: `sub.uid == TEACHER_ID` + stored `"all"` + absent → push (teacher identity is config-pinned, not session-derived; still safe because teacher owns all classes). This + §15.1(4) `revoke-class` deletes `"all"` rows closes the leak without tombstones.
-- Explicit logout: row for that `sid` already deleted → logged-out device gets nothing even if same `uid` live elsewhere. Relog silent-heal (§6 step 5) re-creates row with new `sid`.
-- `revoke-user/logout-all`: rows deleted synchronously → no send. Hourly sweep (same ticker as session sweeper): delete `fail_count>10 && last_ok>30d` + `no live session && last_ok>7d`.
+### D0 — spike (0.5d, standalone, before Gate changes)
 
-### 15.5 Remaining questions (all resolved by Builder — teacher confirms only Q8 devices)
+1. Minimal Go sender with `webpush-go v1.4.0` + real browser subscription (manual vapid-key dump) → prove VAPID send → desktop notification + `201` from push service (iOS-HS proof deferred to P2).
+2. Live remark42 webhook dump (ephemeral secret, `spike/` style, never committed) proving frozen §7.1 template: parses, valid JSON on quotes/newlines/emoji, `.Timestamp.Unix` numeric, `.Orig` populated, `Content-Type + secret` headers received.
+3. Exit: one-paragraph verdict appended here (split to `plans/0004-push-spike.md` only if >1 page). Template string locked. Gates D1.
 
-- Q-coalesce latency: resolved to immediate-first + 30s tail-batch (§15.1(6)) — best UX (single instant, burst collapsed) + meets P2 `<30s`. No teacher input needed.
-- Q-absent-"all" leak: resolved to skip-when-absent except teacher (§15.4) + `revoke-class` deletes `"all"` rows (§15.1(4)). No poller, no tombstone.
-- Q-webhook Guard reuse: resolved to new `VerifyWebhook` (§15.1(1)). No Caddy change for webhook.
-- Q-revision injection: resolved to `Server.Revision` (§15.1(3)).
-- Q-JS placement: resolved to `static/push.js` + bell HTML (§15.1(9)).
-- Only open for teacher (Q8, already confirmed): provide real iPhone (iOS ≥16.4, HS-installed) + Android Chrome for P1/P2 waves + `cf-cache-status` evidence. No other blocker.
+### D1 — PWA shell (1d, no webhook yet)
 
-### 15.6 D0/D1/D2/D3 acceptance deltas (amends §11, normative)
+1. `gate/config/config.go`: VAPID_* + secret validation + `VapidFP8` helper (§7.1).
+2. `gate/sessions/sessions.go`: create `push_subs`, `push_meta` buckets; push CRUD + `SessionsForUID`/`BestSessionForUID`.
+3. `gate/ratelimit/ratelimit.go`: `push` map + `AllowPush(sid)` (`Every(3s)`, burst 20).
+4. `gate/push/`: leaf types, `VerifyWebhook`, validation, `TitleCache`.
+5. `gate/cmd/genvapid/main.go`: generator (never commit output).
+6. `gate/handlers/handlers.go`: `Server.Revision` field + `New` param (set from `main.buildRevision()`); `Routes` `/push/*` + `/offline.html`; manifest upgrade (§5); full `sw.js` (§6); `handleOffline`; JSON errors; `push.js` wiring.
+7. `gate/main.go`: pass `Revision`, no worker yet (fan-out no-op `push_noop_no_event`).
+8. `gate/static/push.js` + `gate/static/offline.html` + `class.html`/`index.html` (bell + install hint + `push.js` script).
+9. `deploy/Caddyfile` + `deploy/caddy-verify.sh` (checks 6–9 + stub) + `docker compose config`; `caddy validate`; CF verify.
+10. Acceptance: Wave P1 green (teacher on iPhone + Android) + Lighthouse ≥90 + `/offline.html 200` + `/push/vapid-key 401 anon` + SW bundle unit test (allowlist, no `caches.add('/')`/`/class`, no `localStorage`/`document.cookie`, helper present).
 
-- D0 exit adds: webhook dump proves `.Orig` populated + `.Timestamp.Unix` numeric + valid JSON on quotes/newlines/emoji + headers `Content-Type + secret` received; VAPID sender proves desktop notification + `201` from push service (iOS-HS proof deferred to P2, D0 desktop+logs suffice). Verdict one paragraph appended to §11; split to `plans/0004-push-spike.md` only if >1 page.
-- D1 exit adds: `caddy validate` + extended `caddy-verify.sh` (checks 6–9) green; Wave P1 green incl. Lighthouse ≥90, `/offline.html 200`, `/push/vapid-key 401 anon`, SW bundle unit test (no `caches.add('/')`, no `/class`, no `localStorage`/`document.cookie`) green.
-- D2 exit adds: Wave P2 green items 6–12+7b with amended item 10 (≤2 pushes per 30s window, visible 1); `docker stats gate <256M` during burst; `push_send/push_prune/push_skip_revoked/push_403_key_mismatch` log samples in TESTLOG; consent line live.
-- D3 exit adds: `govulncheck` job green, runbook rotation § + `push/health` deep evidence, `go build/vet/test -count=1` green, `caddy-verify.sh` re-run green. Then merge.
+### D2 — push pipeline (2d, core)
 
-### 15.7 Implementer file checklist (order)
+1. `gate/push/`: webhook handler, worker + coalesce + retry (§7.3), title cache population.
+2. `gate/handlers`: subscribe/unsubscribe/resubscribe/vapid-key/health wrappers + logout prune + consent update.
+3. `gate/admin`: `logoutAll`/`revokeUser`/`revokeClass` prune.
+4. `deploy/compose.yml`: `NOTIFY_*` wiring (frozen template, no edits without D0 re-verdict).
+5. RU strings + consent line live.
+6. Acceptance: Wave P2 green (items 6–12 + 7b; item 10 = ≤2 pushes per 30s window, visible 1) + `docker stats gate <256M` + `push_send/push_prune/push_skip_revoked/push_403_key_mismatch` samples.
 
-`gate/config/config.go` (VAPID_* + secret validation + fp8 helper) → `gate/sessions/sessions.go` (buckets + push CRUD + SessionsForUID/BestSessionForUID) → `gate/ratelimit/ratelimit.go` (AllowPush) → `gate/push/*` (leaf lib: types, webhook verify, subscribe/unsubscribe/resubscribe/vapid-key/health handlers, worker+coalesce+retry, title cache) → `gate/cmd/genvapid/main.go` → `gate/handlers/handlers.go` (Routes `/push/*` + `/offline.html`, Revision field, manifest upgrade, sw.js full, offline handler, logout prune, JSON errors, push.js wiring) → `gate/admin/admin.go` (prune hooks) → `gate/main.go` (Revision pass, push worker start) → `gate/static/push.js` + `gate/templates/class.html/index.html` (bell + install hint) + `gate/static/offline.html` or template → `deploy/Caddyfile` (snippets above) + `deploy/compose.yml` (NOTIFY_* single-quoted template + gate VAPID_* env) + `deploy/.env.example` (keys only) + `deploy/caddy-verify.sh` (checks 6–9) → `.github/workflows/ci.yml` (govulncheck) → `docs/ops-runbook.md` (rotation + debug hash-compare) → `TESTLOG.md` waves P1/P2.
+### D3 — hardening (0.5d)
 
+1. Rotation runbook section (single-key MVP + future overlap, `_OLD` reserved).
+2. `push/health` deep evidence; TESTLOG waves; `caddy-verify.sh` re-run.
+3. Unit tests: SW allowlist + webhook validation (`http:`/bad keys/oversize rejected) + `BestSessionForUID` ACL matrix + logout-deletes-only-that-sid + user-change guard.
+4. `.github/workflows/ci.yml`: `govulncheck` job (`go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...`).
+5. `go build/vet/test -count=1` green + `docker stats` evidence. Then merge.
+
+Deferred: teacher Telegram channel (`plans/0003-teacher-telegram.md`, needs BotFather bot); lesson-level `…/lesson/<lid>` push; email fallback; TWA/Play packaging.
+
+File order: `config` → `sessions` → `ratelimit` → `push` → `genvapid` → `handlers` → `admin` → `main` → `static/push.js` + `templates` + `static/offline.html` → `Caddyfile` + `compose.yml` + `.env.example` + `caddy-verify.sh` → `ci.yml` → `ops-runbook.md` → `TESTLOG.md`.
+
+## 10. Browser test plan (append to TESTLOG.md)
+
+P1 (installability, webhook disabled):
+1. Desktop Chrome `chrome://apps` + DevTools Manifest (no errors, 192+512, `standalone`), Lighthouse ≥90.
+2. Android Chrome: `beforeinstallprompt` → Install → `standalone` (`?source=pwa` in Gate log), icon correct.
+3. iPhone Safari (confirmed device): Share → Add to Home Screen → `standalone`; pre-install toggle shows iOS-hint; post-install tap shows permission prompt (never on load).
+4. Offline: airplane mode → `/static/style.css` from SW cache, `/` shows `/offline.html` (generic), `/class/<cid>` fails safe (no stale private HTML). Record `cf-cache-status` for `/manifest.json`, `/sw.js`, `/offline.html`, `/push/vapid-key`.
+5. Caddy contracts green: `caddy-verify.sh` + 0001 §8 items 1–7.
+
+P2 (push end-to-end, webhook enabled, ≥2 test users; teacher validates on confirmed iPhone + Android):
+6. A subscribes on `/class/<cid>` → B posts → A gets notification <30s (tab closed) with correct title/body/deep-link; click focuses/opens `/class/<cid>#remark-<id>`. Log `push_send`.
+7. Self-suppressed (B gets nothing for own); outsider/revoked gets nothing (`push_skip_revoked`; re-join resumes).
+7b. Logout silence: A logs out device1 → B posts → device1 nothing, device2 (same A) fires. A re-logs device1 (silent heal) → next post fires without re-tap. Shared-computer: A out, B in same profile without tap → B gets nothing until tap; after tap B gets own only.
+8. Multi-device: A on 2 browsers → both fire; unsubscribe one → only remaining fires.
+9. Denied/expired: deny → RU denied-string; devtools `unsubscribe()` → next webhook `410` → prune (`push_prune expired`).
+10. Burst: 5 comments in 30s → ≤2 pushes (1 immediate + 1 summary `N новых комментариев`), visible 1 (same tag + renotify).
+11. Teacher `"all"` gets every owned class; student `"all"` only own `allowed`.
+12. Resource: `docker stats` gate <256M; `go test -count=1` + `vet` green.
+
+## 11. Risks
+
+- iOS HS-install skipped → one-line RU hint + teacher announcement (`Установите как приложение, иначе уведомления не придут — инструкция на главной`). No auto-prompt.
+- Webhook template drift / `Locator.URL` change → `ExtractCID` fail-closed + `push_webhook_bad_url` + `push_webhook_gap` (no crash/leak). Next comment heals.
+- Endpoint churn → `410/404` prune + `pushsubscriptionchange` + page-load migration/heal + user-change guard + hourly sweep. `403` = rotation signal, never auto-delete. Logout deletes only that `sid` rows.
+- VAPID leak → per-sub `key_version` rotation; single-key swap safe only in test scope; production must overlap; old dies when old-version count → 0.
+- SW cache poisoning → allowlist `/static/*` + `/offline.html` only, generic offline fallback, `no-store` on `sw.js`, unit test allowlist.
+- Single VPS SPOF + in-memory queue → burst loss on restart accepted (comments remain; no `down -v`).
+- New dep `webpush-go` — pinned + `govulncheck`.
+
+## 12. Decisions
+
+All decisions below are final. Implementation must match; any change requires plan update.
+
+| # | Topic | Decision | Details |
+|---|-------|----------|---------|
+| D1 | Notify scope | All class members except author | No thread-participant-only mode in MVP. Coalesced per §7.3. |
+| D2 | Quiet hours | None in MVP | Revisit only if night spam becomes a problem (morning digest deferred, no design). |
+| D3 | Teacher Telegram | Design in `0003`, implementation deferred | Needs teacher BotFather bot + VPS `.env` token. |
+| D4 | Test scope | Webhook-only MVP, no poller | Ephemeral secrets ok; outage heals on next comment. |
+| D5 | Caddy routing | Enumerated handles + own `/offline.html` + webhook `404` + health `header_up` | `handle /push/vapid-key*`, `/push/subscribe*`, `/push/unsubscribe*`, `/push/resubscribe*` (plain proxy); `handle /push/health*` with `header_up X-Gate-Auth`; `handle /push/webhook* {404}`; own `handle /offline.html` (not `@static` edit). Verify checks 6–9. Compose template single-quoted, headers double-quoted. |
+| D6 | Service Worker | Navigation-only offline fallback + cache-first static; bare `register('/sw.js')`; `STATIC_CACHE="static-"+REV` | No `localStorage`/`document.cookie` in SW; `pushsubscriptionchange` best-effort via CSRF-exempt resubscribe; page-load migration/heal/user-change guard; `urlBase64ToUint8Array` in both SW and page; gesture-only permission, `userVisibleOnly:true`, always `showNotification`. No preload, no background/periodic sync. |
+| D7 | CSRF | `subscribe|unsubscribe` = Origin + header CSRF + rate limit; `resubscribe` = Origin + sid + rate limit only | `validSameOrigin` + `VerifyHeaderCSRF` (`__Host-csrf` via `document.cookie`) + `AllowPush Every(3s)` burst 20 per `sid`. `resubscribe` CSRF-exempt (SW cannot send header; `SameSite=Lax` + Origin sufficient). SW uses `credentials:'include'`. No `/auth/me` change. |
+| D8 | Author name | Webhook `User.Name` primary | Fallback `BestSessionForUID(author_uid).FIO`, else `""` (body = snippet alone). |
+| D9 | Subscribe scope | `"all"` for students + teacher; per-class disable via narrowed `POST`; no `PATCH` | Server expands `"all"` at send time via `BestSessionForUID` so revoke takes effect immediately. |
+| D10 | Consent | Extended with push-service transit sentence | Verbatim §7.2; login page existing slot; bell-Off text frozen. |
+| D11 | Worker | 4 senders (in-flight 4), Stepik limiter untouched, immediate-first coalesce + non-blocking retry, `sid` per row | Queue 512 (gate) / 200 (remark42). `Topic: class-<cid>`, `TTL: 86400`, urgency normal. `SendNotificationWithContext(ctx10s)`. |
+| D12 | Dependency | `webpush-go v1.4.0` interim + `govulncheck` in CI | MIT; pin `go.mod`+`go.sum`. No hand-rolled VAPID. |
+| D13 | Manifest | `id:/` stable + `start_url:/?source=pwa`; split `any` / `maskable` | Verify-or-regenerate maskable (opaque, 80% safe zone). |
+| D14 | SW safety | Unit test (not grep) asserts allowlist | No `caches.add('/')`, no `/class`, no `localStorage`/`document.cookie` in SW, helper present. |
+| D15 | Webhook template | Frozen §7.1, no `truncate`, unquoted `escapeJSONString`, `text_html` + `text_orig` + `created_unix` numeric, explicit `Content-Type`, `NOTIFY_QUEUE=200` | D0 proves verbatim; no edits without D0 re-verdict. |
+| D16 | Send-time ACL | Present → require allowed else suppress; absent array → push from stored; absent `"all"` → skip except teacher; logout deleted → nothing; revoke prunes synchronously | `push_skip_revoked` on suppress. `revoke-class` deletes `"all"` rows (healed on next visit). Sweep `fail>10 && ok>30d` + `no session && ok>7d`. |
+| D17 | VAPID keys | Per-sub `key_version` (`fp8`), single-key MVP, `_OLD` reserved, no dual-send | `fp8 = hex(sha256([]byte(public string)))[:8]`; unsubscribe-before-resubscribe; generator `gate/cmd/genvapid`; fail-fast Load. |
+| D18 | Resubscribe | `POST /push/resubscribe` UPDATE-by-`old_endpoint` + page migration/heal/user-change guard | SW best-effort; page primary healer; compat Win/Mac/iOS/Android × Chrome/Chromium/Safari/Firefox. |
+| D19 | Titles | In-memory `cid → title` cache, `Класс <cid>` fallback | Set at subscribe + login + `EnsureFresh` success; send only reads; lost on restart; no Stepik hot-path. |
+| D20 | Health | `/push/health` shallow public, deep via Caddy `header_up` | Deep `{ok, subs, queue}`; separate from `/healthz`. |
+| D21 | Caps | 64KB webhook / 2KB payload / `AllowPush` 20/min/sid / queue 512 / 4 workers / 30s coalesce | Endpoint `https:` any host (log host) + `len<2048`; `p256dh` 87–88, `auth` 22–24 decode-checked; `cids ⊆ allowed` else `403`; `ua` 256, `name` 64. |
+| D22 | Logout silence | Per-device (`sid`) delete; relog silent-heal; user-change forces untap; bell per-device | Logged-out device gets nothing even if same `uid` live elsewhere. |
+| D23 | Push errors | JSON `{error}` with `private,no-store` + `noindex` | `401/403/429+Retry-After/bad_request`; reuse RU rate-limited text in JSON. |
+| D24 | Revision wiring | `Server.Revision` from `main.buildRevision()` injected as `REV` | Bare `register('/sw.js')`, no `?v=`. |
+| D25 | Webhook guard | New `VerifyWebhook` (secret constant-time + private peer, `404`) | Never reuse `auth.Guard`; never via Caddy. |
+| D26 | Coalesce UX | Immediate-first + 30s tail-batch | Single → <5s; burst 5/30s → 2 sends (total N), visible 1. |
+| D27 | Log privacy | Hashes only: `uid_hash8`, `endpoint_hash8` | Never endpoint/keys/snippet; webhook log `cid,comment_id,author_uid,sub_count` only. |
+| D28 | Client JS | Separate `static/push.js` + bell HTML | Cached, SW-cached; inline `data-*` only. |
+| D29 | Snippet | `Orig` primary else stripped `Text`, 120 runes, ≤2KB | Tag strip + unescape + collapse; empty → `Новый комментарий`. |
+| D30 | Test devices | Teacher provides real iPhone + Android — confirmed | Used for P1/P2; not an open question. |
+
+## 13. References
+
+Local (ground truth): `plans/0001-stepik-discussion-site.md` (§§3–8, §7.4, §5.2–5.3, §6.1); `plans/0003-teacher-telegram.md`; `AGENTS.md`; `docs/ops-runbook.md` (§§2/8–9); `deploy/Caddyfile`, `deploy/compose.yml`, `deploy/.env.example`, `deploy/caddy-verify.sh`; `gate/main.go`, `gate/handlers/handlers.go`, `gate/handlers/htmlsession.go` + `util.go`, `gate/config/config.go`, `gate/sessions/sessions.go`, `gate/auth/auth.go`, `gate/admin/admin.go`, `gate/ratelimit/ratelimit.go`, `gate/templates/`, `gate/static/*`, `go.mod`/`go.sum`, `.github/workflows/ci.yml`, `TESTLOG.md`.
+
+Upstream code: `remark42/backend/app/notify/webhook.go`, `remark42/backend/app/store/comment.go`, `remark42/backend/app/store/user.go`, `go-pkgz/notify/webhook.go`, `SherClockHolmes/webpush-go` (`webpush.go`, `v1.4.0` releases, pkg.go.dev).
+
+Docs/standards: `remark42.com/docs/configuration/notifications/` + `/parameters/`; `backend/app/cmd/server.go` (`NotifyGroup`/`Webhook`); RFC 8292 §4.2 + RFC 9749 §5; web-push rotation guides; MDN (`pushsubscriptionchange`, installable, manifest `start_url`/`icons`); Apple Web Push docs + WebKit 13878/13966; Chrome `pwa-manifest-id` + Lighthouse maskable audit + web.dev maskable + maskable.app; Caddy `handle/handle_path/route/reverse_proxy` + matchers.
