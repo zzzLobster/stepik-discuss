@@ -733,9 +733,10 @@ self.addEventListener("notificationclick", (e) => {
   e.notification.close();
   let url = (e.notification.data && e.notification.data.url) || "/";
   if (typeof url !== "string" || !url.startsWith("/class/")) url = "/";
+  const absUrl = new URL(url, location.origin).href;
   e.waitUntil(clients.matchAll({type: "window", includeUncontrolled: true}).then((ws) => {
-    for (const w of ws) { try { if (new URL(w.url).pathname === new URL(url, location.origin).pathname) { return w.focus().then((cw) => { const t = cw || w; const send = () => { try { t.postMessage({type: "push-click", url: url}); } catch(_) {} }; if ("navigate" in t) { return t.navigate(url).then(send, send); } send(); }); } } catch(_) {} }
-    return clients.openWindow(url);
+    for (const w of ws) { try { if (new URL(w.url).pathname === new URL(url, location.origin).pathname) { return w.focus().then((cw) => { const t = cw || w; const send = () => { try { t.postMessage({type: "push-click", url: url}); } catch(_) {} }; if ("navigate" in t) { return t.navigate(absUrl).then(send, send); } send(); }); } } catch(_) {} }
+    return clients.openWindow(absUrl);
   }));
 });
 self.addEventListener("pushsubscriptionchange", (e) => {
