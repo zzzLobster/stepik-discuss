@@ -2,11 +2,11 @@ FROM golang:1.27.1-alpine AS build
 WORKDIR /src
 RUN apk add --no-cache git
 COPY go.mod go.sum ./
-RUN go mod download
+COPY vendor ./vendor
 COPY gate ./gate
 COPY .git ./.git
 ARG REV
-RUN CGO_ENABLED=0 go build -ldflags "-X main.revision=$REV" -o /gate ./gate
+RUN CGO_ENABLED=0 go build -mod=vendor -ldflags "-X main.revision=$REV" -o /gate ./gate
 
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates wget && adduser -S -u 10001 gate && \
