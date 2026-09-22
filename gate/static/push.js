@@ -176,6 +176,49 @@ async function togglePush(){
     if(st){st.textContent="Не удалось включить уведомления. Попробуйте позже.";}
   }
 }
+// Badge clear on any authenticated app page open (simple clear).
+// Known limitation (no code): one counter per browser profile — two profiles
+// sharing one OS app icon last-write-wins; acceptable for 2-user scope.
+async function clearBadgeAndCounter(){
+  try{
+    const body=document.body;
+    const uid=body?body.getAttribute("data-uid"):"";
+    if(!uid)return;
+    if("clearAppBadge" in navigator){
+      try{await navigator.clearAppBadge();}catch(_){}
+    }
+    try{
+      await new Promise((resolve)=>{
+        try{
+          let req;
+          try{req=indexedDB.open("push-badge",1);}catch(_){resolve();return;}
+          req.onupgradeneeded=()=>{try{req.result.createObjectStore("kv");}catch(_){}};
+          req.onsuccess=()=>{
+            try{
+              const db=req.result;
+              const closeDb=()=>{try{db.close();}catch(_){}};
+              try{
+                const tx=db.transaction("kv","readwrite");
+                const store=tx.objectStore("kv");
+                let put;
+                try{put=store.put(0,"unread");}catch(_){closeDb();resolve();return;}
+                put.onsuccess=()=>{closeDb();resolve();};
+                put.onerror=()=>{closeDb();resolve();};
+                tx.oncomplete=()=>{closeDb();resolve();};
+                tx.onerror=()=>{closeDb();resolve();};
+                tx.onabort=()=>{closeDb();resolve();};
+              }catch(_){closeDb();resolve();}
+              setTimeout(()=>{try{closeDb();}catch(_){}resolve();},2000);
+            }catch(_){resolve();}
+          };
+          req.onerror=()=>{resolve();};
+          req.onblocked=()=>{resolve();};
+          setTimeout(resolve,3000);
+        }catch(_){resolve();}
+      });
+    }catch(_){}
+  }catch(_){}
+}
 (function(){
   let deferredPrompt=null;
   function isStandalone(){
@@ -256,11 +299,14 @@ async function togglePush(){
   document.addEventListener("DOMContentLoaded",()=>{
     const bells=document.querySelectorAll("[data-bell]");
     bells.forEach((b)=>{b.addEventListener("click",togglePush);});
+    const refresh=document.querySelectorAll("[data-refresh]");
+    refresh.forEach((b)=>{b.addEventListener("click",()=>{location.reload();});});
     if(isIosNotInstalled()){
       const h=document.querySelector("[data-ios-hint]");
       if(h)showIosHint(h);
     }
     healSubscription();
+    clearBadgeAndCounter();
     if(deferredPrompt)showInstallButton();
     const help=document.querySelector("[data-install-help]");
     if(help){

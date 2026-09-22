@@ -32,10 +32,12 @@ type Job struct {
 }
 
 type coalesceEntry struct {
-	count      int
-	latestID   string
-	authorUIDs []int64
-	timer      *time.Timer
+	count       int
+	latestID    string
+	authorUIDs  []int64
+	firstAuthor int64
+	seen        map[string]int64
+	timer       *time.Timer
 }
 
 type Sender func(ctx context.Context, payload []byte, sub *sessions.PushSub, opts *webpush.Options) (*http.Response, error)
@@ -102,14 +104,23 @@ func (w *Worker) handleJob(j Job) {
 	w.mu.Lock()
 	e, ok := w.coalesce[j.Cid]
 	if !ok {
-		e = &coalesceEntry{count: 1, latestID: j.CommentID, authorUIDs: []int64{j.AuthorUID}}
+		e = &coalesceEntry{count: 1, latestID: j.CommentID, authorUIDs: []int64{j.AuthorUID}, firstAuthor: j.AuthorUID, seen: map[string]int64{j.CommentID: j.AuthorUID}}
 		e.timer = time.AfterFunc(30*time.Second, func() { w.flush(j.Cid) })
 		w.coalesce[j.Cid] = e
 		w.mu.Unlock()
 		w.sendImmediate(j)
 		return
 	}
-	e.count++
+	if e.seen == nil {
+		e.seen = map[string]int64{}
+	}
+	if _, dup := e.seen[j.CommentID]; dup {
+		e.latestID = j.CommentID
+		w.mu.Unlock()
+		return
+	}
+	e.seen[j.CommentID] = j.AuthorUID
+	e.count = len(e.seen)
 	e.latestID = j.CommentID
 	found := false
 	for _, id := range e.authorUIDs {
@@ -121,13 +132,7 @@ func (w *Worker) handleJob(j Job) {
 	if !found {
 		e.authorUIDs = append(e.authorUIDs, j.AuthorUID)
 	}
-	count := e.count
-	latest := e.latestID
-	authors := append([]int64(nil), e.authorUIDs...)
 	w.mu.Unlock()
-	_ = count
-	_ = latest
-	_ = authors
 }
 
 func (w *Worker) flush(cid int64) {
@@ -139,13 +144,21 @@ func (w *Worker) flush(cid int64) {
 	}
 	delete(w.coalesce, cid)
 	count := e.count
+	if e.seen != nil && len(e.seen) > 0 {
+		count = len(e.seen)
+	}
 	latest := e.latestID
 	authors := e.authorUIDs
+	first := e.firstAuthor
+	seenCopy := make(map[string]int64, len(e.seen))
+	for k, v := range e.seen {
+		seenCopy[k] = v
+	}
 	w.mu.Unlock()
 	if count <= 1 {
 		return
 	}
-	w.sendSummary(cid, count, latest, authors)
+	w.sendSummary(cid, count, latest, authors, first, seenCopy)
 }
 
 func (w *Worker) titleFor(cid int64) string {
@@ -177,38 +190,77 @@ func (w *Worker) sendImmediate(j Job) {
 		body = "Новый комментарий"
 	}
 	for _, sub := range subs {
-		w.sendToSub(sub, j.Cid, title, body, j.CommentID, j.AuthorUID, j.Attempt)
+		// Immediates are only ever sent to non-authors (author rows skipped
+		// inside sendToSub); every immediate carries exactly one new comment.
+		w.sendToSub(sub, j.Cid, title, body, j.CommentID, j.AuthorUID, j.Attempt, 1)
 	}
 }
 
-func (w *Worker) sendSummary(cid int64, count int, latestID string, authorUIDs []int64) {
+// summaryN is the per-sub total new non-own comments for the summary body.
+func summaryN(windowUnique, ownInWindow int) int {
+	return windowUnique - ownInWindow
+}
+
+// summaryBadgeCount is the additive badge increment for a summary send.
+// windowUnique counts unique comment IDs in the coalesce window, ownInWindow
+// counts the sub's own among them. The immediate already contributed 1 for
+// non-first-author subs, so subtract it. Floored at 0; caller skips send when 0.
+func summaryBadgeCount(windowUnique, ownInWindow int, firstAuthor, subUID int64) int {
+	n := windowUnique - ownInWindow
+	if firstAuthor != subUID {
+		n--
+	}
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+func ownInSeen(seen map[string]int64, subUID int64) int {
+	n := 0
+	for _, au := range seen {
+		if au == subUID {
+			n++
+		}
+	}
+	return n
+}
+
+func (w *Worker) sendSummary(cid int64, count int, latestID string, authorUIDs []int64, firstAuthor int64, seen map[string]int64) {
 	subs, err := w.store.SnapshotPushSubs()
 	if err != nil {
 		return
 	}
 	title := w.titleFor(cid)
-	ownSet := map[int64]bool{}
-	for _, id := range authorUIDs {
-		ownSet[id] = true
+	windowUnique := count
+	if len(seen) > 0 {
+		windowUnique = len(seen)
 	}
-	_ = ownSet
 	for _, sub := range subs {
-		ownCount := 0
-		for _, id := range authorUIDs {
-			if id == sub.UID {
-				ownCount++
+		var ownInWindow int
+		if len(seen) > 0 {
+			ownInWindow = ownInSeen(seen, sub.UID)
+		} else {
+			for _, id := range authorUIDs {
+				if id == sub.UID {
+					ownInWindow++
+				}
 			}
 		}
-		n := count - ownCount
+		n := summaryN(windowUnique, ownInWindow)
 		if n <= 0 {
 			continue
 		}
+		badge := summaryBadgeCount(windowUnique, ownInWindow, firstAuthor, sub.UID)
+		if badge <= 0 {
+			continue
+		}
 		body := strconv.Itoa(n) + " " + plural(n)
-		w.sendToSub(sub, cid, title, body, latestID, 0, 0)
+		w.sendToSub(sub, cid, title, body, latestID, 0, 0, badge)
 	}
 }
 
-func (w *Worker) sendToSub(sub sessions.PushSub, cid int64, title, body, commentID string, authorUID int64, attempt int) {
+func (w *Worker) sendToSub(sub sessions.PushSub, cid int64, title, body, commentID string, authorUID int64, attempt int, count int) {
 	if authorUID != 0 && sub.UID == authorUID {
 		return
 	}
@@ -273,7 +325,7 @@ func (w *Worker) sendToSub(sub sessions.PushSub, cid int64, title, body, comment
 	if !IsValidCommentID(commentID) {
 		return
 	}
-	payload := PushPayload{Title: truncateRunes(title, 100), Body: body, Tag: "cid-" + strconv.FormatInt(cid, 10), URL: url, Cid: cid, CommentID: commentID}
+	payload := PushPayload{Title: truncateRunes(title, 100), Body: body, Tag: "cid-" + strconv.FormatInt(cid, 10), URL: url, Cid: cid, CommentID: commentID, Count: count}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return

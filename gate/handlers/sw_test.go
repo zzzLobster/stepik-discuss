@@ -36,6 +36,12 @@ func TestSW_bundle(t *testing.T) {
 		`userVisibleOnly`,
 		`showNotification`,
 		`pushsubscriptionchange`,
+		`setAppBadge`,
+		`"setAppBadge" in navigator`,
+		`push-badge`,
+		`indexedDB`,
+		`"unread"`,
+		`"kv"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("sw.js missing %q", want)

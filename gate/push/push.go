@@ -112,6 +112,9 @@ type WebhookReq struct {
 }
 
 // PushPayload is Gate → push service payload (≤2048B after marshal).
+// Count is additive badge increment: SW adds it to the IndexedDB "push-badge"
+// counter then calls navigator.setAppBadge(total). Absent counts as 1 for
+// backward compat (SW uses payload.count ?? 1).
 type PushPayload struct {
 	Title     string `json:"title"`
 	Body      string `json:"body"`
@@ -119,6 +122,7 @@ type PushPayload struct {
 	URL       string `json:"url"`
 	Cid       int64  `json:"cid"`
 	CommentID string `json:"comment_id"`
+	Count     int    `json:"count"`
 }
 
 func plural(n int) string {

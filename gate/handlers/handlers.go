@@ -722,13 +722,65 @@ self.addEventListener("fetch", (e) => {
 self.addEventListener("push", (e) => {
   let d = {}; try { d = e.data ? e.data.json() : {}; } catch { d = {title: "Новый комментарий"}; }
   const title = d.title || "Новый комментарий";
+  let inc = 1;
+  try { if (d && typeof d.count === "number" && isFinite(d.count) && d.count >= 0) inc = Math.floor(d.count); } catch (_) { inc = 1; }
   e.waitUntil(self.registration.showNotification(title, {
     body: d.body || "",
     icon: "/static/icon-192.png", badge: "/static/icon-192.png",
     tag: d.tag || ("cid-" + d.cid), renotify: true,
     data: {url: d.url || ("/class/" + d.cid), cid: d.cid, comment_id: d.comment_id},
+  }).then(() => {
+    try {
+      if (!("setAppBadge" in navigator)) return;
+      return badgeBump(inc);
+    } catch (_) {}
   }));
 });
+function badgeBump(inc) {
+  try {
+    return new Promise((resolve) => {
+      try {
+        let done = false;
+        const finish = () => { if (!done) { done = true; resolve(); } };
+        let req;
+        try { req = indexedDB.open("push-badge", 1); } catch (_) { finish(); return; }
+        req.onupgradeneeded = () => { try { req.result.createObjectStore("kv"); } catch (_) {} };
+        req.onsuccess = () => {
+          try {
+            const db = req.result;
+            const closeDb = () => { try { db.close(); } catch (_) {} };
+            try {
+              const tx = db.transaction("kv", "readwrite");
+              const store = tx.objectStore("kv");
+              const getReq = store.get("unread");
+              getReq.onsuccess = () => {
+                try {
+                  let cur = getReq.result;
+                  if (typeof cur !== "number" || !(cur >= 0)) cur = 0;
+                  cur = Math.floor(cur);
+                  const total = cur + inc;
+                  let putReq;
+                  try { putReq = store.put(total, "unread"); } catch (_) { try { navigator.setAppBadge(total); } catch (_) {} closeDb(); finish(); return; }
+                  putReq.onsuccess = () => { try { navigator.setAppBadge(total); } catch (_) {} closeDb(); finish(); };
+                  putReq.onerror = () => { try { navigator.setAppBadge(total); } catch (_) {} closeDb(); finish(); };
+                } catch (_) { closeDb(); finish(); }
+              };
+              getReq.onerror = () => { try { navigator.setAppBadge(inc); } catch (_) {} closeDb(); finish(); };
+              tx.oncomplete = () => { closeDb(); finish(); };
+              tx.onerror = () => { closeDb(); finish(); };
+              tx.onabort = () => { closeDb(); finish(); };
+            } catch (_) { closeDb(); finish(); }
+            setTimeout(() => { try { closeDb(); } catch (_) {} finish(); }, 2000);
+          } catch (_) { finish(); }
+        };
+        req.onerror = () => { finish(); };
+        req.onblocked = () => { finish(); };
+        setTimeout(finish, 3000);
+      } catch (_) { resolve(); }
+    });
+  } catch (_) {}
+}
+// Badge counter is per browser profile (IndexedDB same-origin shared with pages): two profiles sharing one OS app icon last-write-wins; acceptable for 2-user scope.
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
   let url = (e.notification.data && e.notification.data.url) || "/";
