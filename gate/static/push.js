@@ -188,6 +188,17 @@ async function clearBadgeAndCounter(){
       try{await navigator.clearAppBadge();}catch(_){}
     }
     try{
+      const reg=await navigator.serviceWorker.ready;
+      let list=[];
+      try{list=await reg.getNotifications();}catch(_){list=[];}
+      for(const n of list){
+        try{
+          const tag=n.tag||"";
+          if(tag.indexOf("cid-")===0)n.close();
+        }catch(_){}
+      }
+    }catch(_){}
+    try{
       await new Promise((resolve)=>{
         try{
           let req;
