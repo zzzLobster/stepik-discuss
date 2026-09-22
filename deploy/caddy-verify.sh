@@ -38,9 +38,45 @@ cat > "$TMPD/upstream.py" <<'PY'
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 class H(BaseHTTPRequestHandler):
+    def vapid_key(self):
+        cookie = self.headers.get('Cookie', '')
+        if '__Host-sid' not in cookie:
+            body = b'{"error":"auth_required"}'
+            self.send_response(401); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+        else:
+            body = b'{"key":"k","fp":"fp123456"}'
+            self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_GET(self):
-        if self.path.split('?')[0] == '/auth/check':
+        p = self.path.split('?')[0]
+        if p == '/auth/check':
             print(json.dumps({'seen': self.headers.get('X-Forwarded-Uri', 'MISSING')}), flush=True)
+            self.send_response(200); self.send_header('Content-Length', '2'); self.end_headers(); self.wfile.write(b'ok')
+        elif p == '/push/vapid-key':
+            self.vapid_key()
+        elif p == '/offline.html':
+            body = b'<html>offline</html>'
+            self.send_response(200); self.send_header('Content-Type', 'text/html'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+        elif p == '/push/health':
+            if 'deep=1' in self.path:
+                if self.headers.get('X-Gate-Auth'):
+                    body = b'{"ok":true}'
+                    self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+                else:
+                    self.send_response(404); self.send_header('Content-Length', '0'); self.end_headers()
+            else:
+                body = b'{"ok":true}'
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+        elif p == '/push/webhook':
+            print(json.dumps({'webhook_hit': self.path}), flush=True)
+            self.send_response(200); self.send_header('Content-Length', '2'); self.end_headers(); self.wfile.write(b'ok')
+        else:
+            self.send_response(200); self.send_header('Content-Length', '2'); self.end_headers(); self.wfile.write(b'ok')
+    def do_POST(self):
+        p = self.path.split('?')[0]
+        if p == '/push/vapid-key':
+            self.vapid_key()
+        elif p == '/push/webhook':
+            print(json.dumps({'webhook_hit': self.path}), flush=True)
             self.send_response(200); self.send_header('Content-Length', '2'); self.end_headers(); self.wfile.write(b'ok')
         else:
             self.send_response(200); self.send_header('Content-Length', '2'); self.end_headers(); self.wfile.write(b'ok')
@@ -92,5 +128,28 @@ CODE=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 --resolve stepik.st
 
 # --- check 5: healthcheck command succeeds inside the container
 docker exec cv-caddy wget -qO- http://localhost:8081/healthz >/dev/null || fail "healthcheck wget failed (localhost:8081 listener regression)"
+
+# --- check 6: POST /push/webhook →404 + upstream-never-hit
+CODE=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 -X POST --resolve stepik.study67.fyi:18443:127.0.0.1 https://stepik.study67.fyi:18443/push/webhook)
+[ "$CODE" = "404" ] || fail "POST /push/webhook returned $CODE, want 404 (edge must 404 before proxy)"
+docker logs cv-upstream 2>&1 | grep -q '"webhook_hit"' && fail "upstream saw /push/webhook hit, want zero (Caddy must 404 before proxy)"
+
+# --- check 7: GET /push/vapid-key no-cookie →401 + with-cookie →200
+CODE=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 --resolve stepik.study67.fyi:18443:127.0.0.1 https://stepik.study67.fyi:18443/push/vapid-key)
+[ "$CODE" = "401" ] || fail "GET /push/vapid-key no-cookie returned $CODE, want 401"
+CODE=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 -b '__Host-sid=test' --resolve stepik.study67.fyi:18443:127.0.0.1 https://stepik.study67.fyi:18443/push/vapid-key)
+[ "$CODE" = "200" ] || fail "GET /push/vapid-key with-cookie returned $CODE, want 200"
+
+# --- check 8: GET /offline.html →200 text/html
+CODE=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 --resolve stepik.study67.fyi:18443:127.0.0.1 https://stepik.study67.fyi:18443/offline.html)
+[ "$CODE" = "200" ] || fail "GET /offline.html returned $CODE, want 200"
+CTYPE=$(curl -sk -o /dev/null -w '%{content_type}' --max-time 15 --resolve stepik.study67.fyi:18443:127.0.0.1 https://stepik.study67.fyi:18443/offline.html)
+echo "$CTYPE" | grep -q 'text/html' || fail "GET /offline.html Content-Type $CTYPE, want text/html"
+
+# --- check 9: GET /push/health?deep=1 without token →404 and with forged X-Gate-Auth →404 (proves strip)
+CODE=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 --resolve stepik.study67.fyi:18443:127.0.0.1 "https://stepik.study67.fyi:18443/push/health?deep=1")
+[ "$CODE" = "404" ] || fail "GET /push/health?deep=1 without token returned $CODE, want 404"
+CODE=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 -H 'X-Gate-Auth: forged' --resolve stepik.study67.fyi:18443:127.0.0.1 "https://stepik.study67.fyi:18443/push/health?deep=1")
+[ "$CODE" = "404" ] || fail "GET /push/health?deep=1 with forged X-Gate-Auth returned $CODE, want 404 (proves strip)"
 
 echo "caddy-verify: all contract checks passed"

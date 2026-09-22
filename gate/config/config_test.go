@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,8 @@ func clearEnv(t *testing.T) {
 		"TEACHER_ID", "GATE_TOKEN_KEY", "REMARK_JWT_SECRET", "CADDY_GATE_TOKEN",
 		"GATE_VERIFY_TTL", "GATE_RETRY_AFTER", "GATE_MAX_STALE",
 		"SITE", "REMARK_URL", "GATE_ORIGIN", "GATE_DB_PATH",
+		"VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_PUBLIC_KEY_OLD",
+		"VAPID_SUBJECT", "PUSH_WEBHOOK_SECRET",
 	} {
 		t.Setenv(k, "")
 		os.Unsetenv(k)
@@ -23,6 +26,10 @@ func validEnv(t *testing.T) {
 	t.Setenv("GATE_TOKEN_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	t.Setenv("REMARK_JWT_SECRET", "0123456789abcdef0123456789abcdef")
 	t.Setenv("CADDY_GATE_TOKEN", "0123456789abcdef0123456789abcdef")
+	t.Setenv("VAPID_PUBLIC_KEY", "B"+strings.Repeat("A", 86))
+	t.Setenv("VAPID_PRIVATE_KEY", strings.Repeat("A", 43))
+	t.Setenv("VAPID_SUBJECT", "mailto:mjgavrilov@gmail.com")
+	t.Setenv("PUSH_WEBHOOK_SECRET", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 }
 
 func TestLoad_defaults(t *testing.T) {

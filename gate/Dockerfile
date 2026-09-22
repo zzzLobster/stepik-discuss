@@ -5,7 +5,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY gate ./gate
 COPY .git ./.git
-RUN CGO_ENABLED=0 go build -o /gate ./gate
+ARG REV
+RUN CGO_ENABLED=0 go build -ldflags "-X main.revision=$REV" -o /gate ./gate
 
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates wget && adduser -S -u 10001 gate && \

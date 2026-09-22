@@ -21,6 +21,8 @@ type Store struct {
 	callback map[string]*visitor
 	discuss  map[string]*visitor
 	check    map[string]*visitor
+	push     map[string]*visitor
+	pushIP   map[string]*visitor
 }
 
 func NewStore() *Store {
@@ -29,6 +31,8 @@ func NewStore() *Store {
 		callback: map[string]*visitor{},
 		discuss:  map[string]*visitor{},
 		check:    map[string]*visitor{},
+		push:     map[string]*visitor{},
+		pushIP:   map[string]*visitor{},
 	}
 }
 
@@ -57,12 +61,6 @@ func ClientIP(r *http.Request) string {
 	if trustedPeer(r) {
 		if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
 			return cf
-		}
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			first := strings.TrimSpace(strings.Split(xff, ",")[0])
-			if first != "" {
-				return first
-			}
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -120,6 +118,16 @@ func (s *Store) AllowDiscuss(sid string) (bool, time.Duration) {
 // before any session load, so unknown-SID floods cannot fan out to Bolt.
 func (s *Store) AllowCheckByIP(ip string) (bool, time.Duration) {
 	return s.allow(s.check, ip, 300*time.Millisecond, 30)
+}
+
+// AllowPush is the per-sid limiter for push routes after auth.
+func (s *Store) AllowPush(sid string) (bool, time.Duration) {
+	return s.allow(s.push, sid, 3*time.Second, 20)
+}
+
+// AllowPushByIP is the pre-auth per-IP limiter for all /push/* incl. shallow health.
+func (s *Store) AllowPushByIP(ip string) (bool, time.Duration) {
+	return s.allow(s.pushIP, ip, time.Second, 30)
 }
 
 func Outbound() *rate.Limiter {

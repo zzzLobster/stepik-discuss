@@ -58,7 +58,7 @@ func testServer(t *testing.T, cfg config.Config) (*Server, *sessions.Store) {
 	limits := ratelimit.NewStore()
 	checker := &auth.Checker{Cfg: cfg, Store: store, Stepik: step, Limits: limits, Log: log}
 	adm := &admin.Admin{Store: store, Origin: cfg.Origin, Log: log}
-	s := New(cfg, store, step, limits, checker, adm, log, testTemplates(t), os.DirFS("../static"))
+	s := New(cfg, store, step, limits, checker, adm, log, testTemplates(t), os.DirFS("../static"), "test-rev")
 	if s.states == nil {
 		t.Fatal("states map nil")
 	}
@@ -74,6 +74,10 @@ func baseCfg() config.Config {
 		VerifyTTL: 6 * time.Hour, RetryAfter: 15 * time.Minute, MaxStale: 48 * time.Hour,
 		Site: "stepik-discuss", RemarkURL: "https://stepik.study67.fyi/discuss",
 		Origin: "https://stepik.study67.fyi",
+		VapidPublicKey: "B" + strings.Repeat("A", 86),
+		VapidPrivateKey: strings.Repeat("A", 43),
+		VapidSubject: "mailto:mjgavrilov@gmail.com",
+		PushWebhookSecret: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	}
 }
 
@@ -133,7 +137,7 @@ func TestRUStrings_frozen(t *testing.T) {
 		"RUOAuthDeny":        "Вход через Stepik отменён или не удался. Попробуйте ещё раз.",
 		"RULoginUnavailable": "Вход временно недоступен. Попробуйте позже.",
 		"RULoginButton":      "Войти через Stepik",
-		"RUConsent":          "Входя через Stepik, вы соглашаетесь, что ваше имя и аватар Stepik будут видны участникам вашего класса. Обсуждения закрыты, не индексируются и доступны только вашему классу и преподавателю.",
+		"RUConsent":          "Входя через Stepik, вы соглашаетесь, что ваше имя и аватар Stepik будут видны участникам вашего класса. Обсуждения закрыты, не индексируются и доступны только вашему классу и преподавателю. Если включите уведомления, браузер получит технический ключ для доставки оповещений о новых комментариях в ваших классах. Уведомления доставляются через сервис push вашего браузера (Google/Apple/Mozilla) — текст уведомления будет передан ему для показа. Отключить можно в любой момент на странице класса или на главной, а также выходом из аккаунта на этом устройстве.",
 		"RUTeacherBanner":    "Проверка студентов приостановлена: токен преподавателя истёк. Войдите через Stepik ещё раз, чтобы возобновить её.",
 	}
 	got := map[string]string{

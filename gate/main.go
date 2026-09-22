@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"html/template"
 	"io/fs"
@@ -14,6 +15,7 @@ import (
 	"github.com/zzzLobster/stepik-discuss/gate/auth"
 	"github.com/zzzLobster/stepik-discuss/gate/config"
 	"github.com/zzzLobster/stepik-discuss/gate/handlers"
+	"github.com/zzzLobster/stepik-discuss/gate/push"
 	"github.com/zzzLobster/stepik-discuss/gate/ratelimit"
 	"github.com/zzzLobster/stepik-discuss/gate/sessions"
 	"github.com/zzzLobster/stepik-discuss/gate/stepik"
@@ -24,6 +26,8 @@ var tplFS embed.FS
 
 //go:embed static/*
 var contentFS embed.FS
+
+var revision = "dev"
 
 func buildRevision() string {
 	info, ok := debug.ReadBuildInfo()
@@ -58,6 +62,18 @@ func main() {
 		log.Error("config invalid", "err", err)
 		os.Exit(1)
 	}
+	rev := revision
+	if rev == "dev" || rev == "" {
+		if b := buildRevision(); b != "unknown" && b != "" {
+			rev = b
+		} else {
+			rev = "dev"
+		}
+	}
+	if !cfg.Placeholder && (rev == "dev" || rev == "unknown" || rev == "") {
+		log.Error("revision missing in prod", "revision", rev)
+		os.Exit(1)
+	}
 	store, err := sessions.Open(cfg.DBPath, cfg.TokenKey)
 	if err != nil {
 		log.Error("session store open failed", "err", err)
@@ -73,6 +89,19 @@ func main() {
 	checker := &auth.Checker{Cfg: cfg, Store: store, Stepik: step, Limits: limits, Log: log}
 	adm := &admin.Admin{Store: store, Origin: cfg.Origin, Log: log}
 	checker.StartTeacherRefresh(stop)
+	go func() {
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				_ = push.SweepPushSubs(store, cfg.VerifyTTL)
+				push.ReconcilePushSubs(context.Background(), store, checker)
+			}
+		}
+	}()
 
 	tpl, err := template.ParseFS(tplFS, "templates/*.html")
 	if err != nil {
@@ -84,10 +113,10 @@ func main() {
 		log.Error("static fs failed", "err", err)
 		os.Exit(1)
 	}
-	srv := handlers.New(cfg, store, step, limits, checker, adm, log, tpl, staticFS)
+	srv := handlers.New(cfg, store, step, limits, checker, adm, log, tpl, staticFS, rev)
 
 	httpSrv := newHTTPServer(":8081", srv.Routes())
-	log.Info("gate listening", "addr", ":8081", "placeholder", cfg.Placeholder, "revision", buildRevision())
+	log.Info("gate listening", "addr", ":8081", "placeholder", cfg.Placeholder, "revision", rev)
 	if err := httpSrv.ListenAndServe(); err != nil {
 		log.Error("gate stopped", "err", err)
 		os.Exit(1)

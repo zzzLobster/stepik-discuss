@@ -16,7 +16,7 @@ func TestClientIP_precedence(t *testing.T) {
 		want    string
 	}{
 		{"cf_trusted_peer", map[string]string{"CF-Connecting-IP": "1.2.3.4", "X-Forwarded-For": "5.6.7.8"}, "127.0.0.1:1", "1.2.3.4"},
-		{"xff_trusted_peer", map[string]string{"X-Forwarded-For": "5.6.7.8, 9.9.9.9"}, "10.0.0.1:1", "5.6.7.8"},
+		{"xff_ignored_trusted_peer", map[string]string{"X-Forwarded-For": "5.6.7.8, 9.9.9.9"}, "10.0.0.1:1", "10.0.0.1"},
 		{"spoof_ignored_public_peer", map[string]string{"CF-Connecting-IP": "1.2.3.4", "X-Forwarded-For": "5.6.7.8"}, "9.9.9.9:1", "9.9.9.9"},
 		{"remote_addr_host", map[string]string{}, "10.0.0.5:443", "10.0.0.5"},
 		{"remote_addr_bare", map[string]string{}, "10.0.0.6", "10.0.0.6"},

@@ -11,12 +11,21 @@
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <meta name="theme-color" content="#3776AB">
 <link rel="manifest" href="/manifest.json">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Stepik Discuss">
+<script src="/static/push.js" defer></script>
+<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js')}</script>
 </head>
-<body>
+<body data-cid="{{.CID}}" data-uid="{{.UID}}" data-allowed='{{.AllowedJSON}}'>
 <main>
 <p><a href="/">← Все классы</a> · {{.FIO}}</p>
 <h1>{{.Title}}</h1>
 <p><a href="{{.StepikURL}}">Открыть класс на Stepik</a></p>
+<p><button type="button" data-bell>🔔 Уведомлять о новых комментариях [Выкл]</button></p>
+<p data-push-status></p>
+<p data-ios-hint style="display:none"></p>
 <div id="remark42"></div>
 <script>
 var remark_config = {

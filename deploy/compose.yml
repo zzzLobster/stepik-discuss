@@ -40,6 +40,8 @@ services:
     build:
       context: ..
       dockerfile: gate/Dockerfile
+      args:
+        REV: ${REV:-dev}
     restart: unless-stopped
     environment:
       STEPIK_CLIENT_ID: ${STEPIK_CLIENT_ID:-placeholder}
@@ -54,6 +56,11 @@ services:
       GATE_MAX_STALE: ${GATE_MAX_STALE:-48h}
       SITE: ${SITE:-stepik-discuss}
       REMARK_URL: ${REMARK_URL:-https://stepik.study67.fyi/discuss}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
+      VAPID_PUBLIC_KEY_OLD: ${VAPID_PUBLIC_KEY_OLD}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:mjgavrilov@gmail.com}
+      PUSH_WEBHOOK_SECRET: ${PUSH_WEBHOOK_SECRET}
     volumes:
       - gate-data:/data
     networks:
@@ -98,6 +105,12 @@ services:
       AUTH_CUSTOM_INFO_URL: https://stepik.org/api/users/1182644732
       # Internal docker network only (behind Caddy forward_auth + Gate JWT).
       TRUSTED_PROXY: ${TRUSTED_PROXY:-172.16.0.0/12}
+      NOTIFY_ADMINS: webhook
+      NOTIFY_WEBHOOK_URL: http://gate:8081/push/webhook
+      NOTIFY_WEBHOOK_HEADERS: "Content-Type:application/json,X-Push-Webhook-Secret:${PUSH_WEBHOOK_SECRET}"
+      NOTIFY_WEBHOOK_TIMEOUT: 5s
+      NOTIFY_QUEUE: 200
+      NOTIFY_WEBHOOK_TEMPLATE: '{"site":{{.Locator.SiteID | escapeJSONString}},"page_url":{{.Locator.URL | escapeJSONString}},"comment":{"id":{{.ID | escapeJSONString}},"parent_id":{{.ParentID | escapeJSONString}},"user_id":{{.User.ID | escapeJSONString}},"user_name":{{.User.Name | escapeJSONString}},"text_html":{{.Text | escapeJSONString}},"text_orig":{{.Orig | escapeJSONString}},"created_unix":{{.Timestamp.Unix}},"score":{{.Score}}}}'
     volumes:
       - remark-data:/srv/var
     networks:

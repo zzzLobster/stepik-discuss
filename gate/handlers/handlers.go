@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"log/slog"
@@ -22,6 +23,7 @@ import (
 	"github.com/zzzLobster/stepik-discuss/gate/admin"
 	"github.com/zzzLobster/stepik-discuss/gate/auth"
 	"github.com/zzzLobster/stepik-discuss/gate/config"
+	"github.com/zzzLobster/stepik-discuss/gate/push"
 	"github.com/zzzLobster/stepik-discuss/gate/ratelimit"
 	"github.com/zzzLobster/stepik-discuss/gate/sessions"
 	"github.com/zzzLobster/stepik-discuss/gate/stepik"
@@ -37,7 +39,7 @@ const (
 	RUOAuthDeny        = "Вход через Stepik отменён или не удался. Попробуйте ещё раз."
 	RULoginUnavailable = "Вход временно недоступен. Попробуйте позже."
 	RULoginButton      = "Войти через Stepik"
-	RUConsent          = "Входя через Stepik, вы соглашаетесь, что ваше имя и аватар Stepik будут видны участникам вашего класса. Обсуждения закрыты, не индексируются и доступны только вашему классу и преподавателю."
+	RUConsent          = "Входя через Stepik, вы соглашаетесь, что ваше имя и аватар Stepik будут видны участникам вашего класса. Обсуждения закрыты, не индексируются и доступны только вашему классу и преподавателю. Если включите уведомления, браузер получит технический ключ для доставки оповещений о новых комментариях в ваших классах. Уведомления доставляются через сервис push вашего браузера (Google/Apple/Mozilla) — текст уведомления будет передан ему для показа. Отключить можно в любой момент на странице класса или на главной, а также выходом из аккаунта на этом устройстве."
 	RUTeacherBanner    = "Проверка студентов приостановлена: токен преподавателя истёк. Войдите через Stepik ещё раз, чтобы возобновить её."
 )
 
@@ -61,16 +63,24 @@ type Server struct {
 	log      *slog.Logger
 	tpl      *template.Template
 	staticFS fs.FS
+	Revision string
+	titles   *push.TitleCache
+	worker   *push.Worker
 
 	mu     sync.Mutex
 	states map[string]oauthState
 }
 
-func New(cfg config.Config, store *sessions.Store, step *stepik.Client, limits *ratelimit.Store, checker *auth.Checker, adm *admin.Admin, log *slog.Logger, tpl *template.Template, staticFS fs.FS) *Server {
+func New(cfg config.Config, store *sessions.Store, step *stepik.Client, limits *ratelimit.Store, checker *auth.Checker, adm *admin.Admin, log *slog.Logger, tpl *template.Template, staticFS fs.FS, revision string) *Server {
+	titles := push.NewTitleCache()
+	w := push.NewWorker(cfg, store, checker, log, titles)
 	return &Server{
 		cfg: cfg, store: store, step: step, limits: limits,
 		checker: checker, adm: adm, log: log, tpl: tpl, staticFS: staticFS,
-		states: map[string]oauthState{},
+		Revision: revision,
+		titles:   titles,
+		worker:   w,
+		states:   map[string]oauthState{},
 	}
 }
 
@@ -79,6 +89,13 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/manifest.json", s.handleManifest)
 	mux.HandleFunc("/sw.js", s.handleSW)
+	mux.HandleFunc("/offline.html", s.handleOffline)
+	mux.HandleFunc("/push/vapid-key", s.handleVapidKey)
+	mux.HandleFunc("/push/subscribe", s.handlePushSubscribe)
+	mux.HandleFunc("/push/unsubscribe", s.handlePushUnsubscribe)
+	mux.HandleFunc("/push/resubscribe", s.handlePushResubscribe)
+	mux.HandleFunc("/push/webhook", s.handlePushWebhook)
+	mux.HandleFunc("/push/health", s.handlePushHealth)
 	mux.HandleFunc("/robots.txt", s.handleRobots)
 	mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	mux.HandleFunc("/static/", s.handleStatic)
@@ -168,6 +185,8 @@ type indexData struct {
 	Consent       string
 	LoginButton   string
 	CSRFToken     string
+	UID           int64
+	AllowedJSON   string
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -209,6 +228,12 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	data.FIO = sess.FIO
 	data.IsTeacher = sess.IsTeacher
 	data.CSRFToken = sess.CSRFToken
+	data.UID = sess.StepikUserID
+	if raw, err := json.Marshal(sess.AllowedClassIDs); err == nil {
+		data.AllowedJSON = string(raw)
+	} else {
+		data.AllowedJSON = "[]"
+	}
 	for _, cid := range sess.AllowedClassIDs {
 		title := sess.ClassTitles[strconv.FormatInt(cid, 10)]
 		if title == "" {
@@ -232,13 +257,15 @@ func (s *Server) teacherTokenValid() bool {
 }
 
 type classData struct {
-	CID       int64
-	Title     string
-	StepikURL string
-	EmbedHost string
-	SiteID    string
-	PageURL   string
-	FIO       string
+	CID         int64
+	Title       string
+	StepikURL   string
+	EmbedHost   string
+	SiteID      string
+	PageURL     string
+	FIO         string
+	UID         int64
+	AllowedJSON string
 }
 
 func (s *Server) handleClass(w http.ResponseWriter, r *http.Request) {
@@ -281,14 +308,20 @@ func (s *Server) handleClass(w http.ResponseWriter, r *http.Request) {
 		title = "Класс " + strconv.FormatInt(cid, 10)
 	}
 	pageURL := s.cfg.ClassBase() + strconv.FormatInt(cid, 10)
+	allowedJSON := "[]"
+	if raw, err := json.Marshal(sess.AllowedClassIDs); err == nil {
+		allowedJSON = string(raw)
+	}
 	s.render(w, http.StatusOK, "class.html", classData{
-		CID:       cid,
-		Title:     title,
-		StepikURL: "https://stepik.org/class/" + strconv.FormatInt(cid, 10),
-		EmbedHost: s.cfg.EmbedHost(),
-		SiteID:    s.cfg.Site,
-		PageURL:   pageURL,
-		FIO:       sess.FIO,
+		CID:         cid,
+		Title:       title,
+		StepikURL:   "https://stepik.org/class/" + strconv.FormatInt(cid, 10),
+		EmbedHost:   s.cfg.EmbedHost(),
+		SiteID:      s.cfg.Site,
+		PageURL:     pageURL,
+		FIO:         sess.FIO,
+		UID:         sess.StepikUserID,
+		AllowedJSON: allowedJSON,
 	})
 }
 
@@ -539,6 +572,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, http.StatusInternalServerError, RUTransient)
 		return
 	}
+	s.cacheTitlesFromSession(sess)
 	s.log.Info("login allow", "uid", uid, "auth_path", authPath, "latency_ms", time.Since(start).Milliseconds(), "cf_ray", cfRay)
 	sessions.SetSID(w, sid)
 	sessions.SetCSRF(w, csrf)
@@ -564,7 +598,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if c, err := r.Cookie(sessions.CookieSID); err == nil {
-		_ = s.store.DeleteSession(c.Value)
+		_ = s.store.DeleteSessionAndPushSubs(c.Value)
 	}
 	sessions.ClearSID(w)
 	sessions.ClearCSRF(w)
@@ -642,15 +676,20 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"name":             "Обсуждения классов Stepik",
 		"short_name":       "Stepik Discuss",
-		"display":          "standalone",
+		"id":               "/",
+		"start_url":        "/?source=pwa",
 		"scope":            "/",
-		"start_url":        "/",
+		"display":          "standalone",
+		"orientation":      "portrait-primary",
 		"lang":             "ru",
+		"dir":              "ltr",
 		"theme_color":      "#3776AB",
 		"background_color": "#ffffff",
+		"categories":       []string{"education"},
 		"icons": []map[string]string{
-			{"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png"},
-			{"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
+			{"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+			{"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+			{"src": "/static/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
 		},
 	})
 }
@@ -658,7 +697,59 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSW(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/javascript")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write([]byte("self.addEventListener('fetch',function(e){return;});\n"))
+	rev := s.Revision
+	if rev == "" {
+		rev = "dev"
+	}
+	sw := fmt.Sprintf(`function urlBase64ToUint8Array(s){s=s.replace(/-/g,"+").replace(/_/g,"/");const p="=".repeat((4-s.length%%4)%%4);const b=atob(s+p);const o=new Uint8Array(b.length);for(let i=0;i<b.length;i++)o[i]=b.charCodeAt(i);return o;}
+const REV = %q; const STATIC_CACHE = "static-" + REV;
+const STATIC_ASSETS = ["/static/style.css", "/static/push.js", "/static/icon-192.png", "/static/icon-512.png", "/static/icon-512-maskable.png", "/static/apple-touch-icon.png", "/static/favicon.svg", "/favicon.ico", "/offline.html"];
+self.addEventListener("install", (e) => { e.waitUntil(caches.open(STATIC_CACHE).then((c) => c.add(new Request("/offline.html", {cache: "reload"})).then(() => c.addAll(STATIC_ASSETS.filter((u) => u !== "/offline.html")))).then(() => self.skipWaiting())); });
+self.addEventListener("activate", (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k.startsWith("static-") && k !== STATIC_CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())); });
+self.addEventListener("fetch", (e) => {
+  const u = new URL(e.request.url);
+  if (e.request.method !== "GET" || u.origin !== location.origin) return;
+  if (e.request.mode === "navigate") {
+    e.respondWith(fetch(e.request).catch(() => caches.open(STATIC_CACHE).then((c) => c.match("/offline.html"))));
+    return;
+  }
+  if (u.pathname.startsWith("/static/") || u.pathname === "/offline.html" || u.pathname === "/favicon.ico") {
+    e.respondWith(caches.open(STATIC_CACHE).then((c) => c.match(e.request).then((hit) => hit || fetch(e.request).then((res) => res))));
+    return;
+  }
+  return;
+});
+self.addEventListener("push", (e) => {
+  let d = {}; try { d = e.data ? e.data.json() : {}; } catch { d = {title: "Новый комментарий"}; }
+  const title = d.title || "Новый комментарий";
+  e.waitUntil(self.registration.showNotification(title, {
+    body: d.body || "",
+    icon: "/static/icon-192.png", badge: "/static/icon-192.png",
+    tag: d.tag || ("cid-" + d.cid), renotify: true,
+    data: {url: d.url || ("/class/" + d.cid), cid: d.cid, comment_id: d.comment_id},
+  }));
+});
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  let url = (e.notification.data && e.notification.data.url) || "/";
+  if (typeof url !== "string" || !url.startsWith("/class/")) url = "/";
+  e.waitUntil(clients.matchAll({type: "window", includeUncontrolled: true}).then((ws) => {
+    for (const w of ws) { try { if (new URL(w.url).pathname === new URL(url, location.origin).pathname) { return w.focus().then(() => { if ("navigate" in w) return w.navigate(url); }); } } catch(_) {} }
+    return clients.openWindow(url);
+  }));
+});
+self.addEventListener("pushsubscriptionchange", (e) => {
+  e.waitUntil((async () => {
+    try {
+      const k = await fetch("/push/vapid-key", {credentials: "include"}).then((r) => { if (!r.ok) throw new Error("key"); return r.json(); });
+      const sub = await self.registration.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(k.key)});
+      const j = sub.toJSON();
+      await fetch("/push/resubscribe", {method: "POST", credentials: "include", headers: {"Content-Type": "application/json"}, body: JSON.stringify({old_endpoint: (e.oldSubscription && e.oldSubscription.endpoint) || "", endpoint: sub.endpoint, keys: j.keys, device: {ua: navigator.userAgent}})});
+    } catch (_) { }
+  })());
+});
+`, rev)
+	_, _ = w.Write([]byte(sw))
 }
 
 func (s *Server) handleRobots(w http.ResponseWriter, r *http.Request) {
@@ -685,6 +776,10 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasSuffix(name, ".css"):
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case strings.HasSuffix(name, ".js"):
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	case strings.HasSuffix(name, ".html"):
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	case strings.HasSuffix(name, ".svg"):
 		w.Header().Set("Content-Type", "image/svg+xml")
 	case strings.HasSuffix(name, ".ico"):

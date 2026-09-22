@@ -93,7 +93,7 @@ func (a *Admin) writeJSON(w http.ResponseWriter, status int, v any) {
 
 func (a *Admin) logoutAll(w http.ResponseWriter, r *http.Request, sess *sessions.SessionRecord) {
 	_ = r
-	epoch, err := a.Store.BumpGlobalEpoch()
+	epoch, err := a.Store.BumpEpochAndClearPush()
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "transient"})
 		return
@@ -108,7 +108,7 @@ func (a *Admin) revokeUser(w http.ResponseWriter, r *http.Request, sess *session
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad_uid"})
 		return
 	}
-	v, err := a.Store.BumpUserVersion(uid)
+	v, err := a.Store.BumpVersionAndPrunePush(uid)
 	if err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "transient"})
 		return
@@ -128,11 +128,10 @@ func (a *Admin) revokeClass(w http.ResponseWriter, r *http.Request, sess *sessio
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad_cid"})
 		return
 	}
-	n, err := a.Store.StripClass(uid, cid)
-	if err != nil {
+	if err := a.Store.StripClassAndPrunePush(uid, cid); err != nil {
 		a.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "transient"})
 		return
 	}
 	a.Log.Info("admin revoke-class", "uid", sess.StepikUserID, "target", uid, "cid", cid)
-	a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "stripped": n})
+	a.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "stripped": 1})
 }

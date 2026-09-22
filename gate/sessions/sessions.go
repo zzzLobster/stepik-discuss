@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -22,11 +23,13 @@ var (
 	BucketUserVersions = []byte("user_versions")
 	BucketTeacherToken = []byte("teacher_token")
 	BucketMeta         = []byte("meta")
+	BucketPushSubs     = []byte("push_subs")
+	BucketPushMeta     = []byte("push_meta")
 
 	KeyTeacherCurrent = []byte("current")
 	KeyGlobalEpoch    = []byte("global_epoch")
 	KeySchemaVersion  = []byte("schema_version")
-	SchemaVersion     = []byte("1")
+	SchemaVersion     = []byte("2")
 )
 
 var ErrCorrupt = errors.New("session corrupt")
@@ -103,16 +106,23 @@ func Open(path string, key []byte) (*Store, error) {
 	s := &Store{db: db}
 	copy(s.key[:], key)
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{BucketSessions, BucketUserVersions, BucketTeacherToken, BucketMeta} {
+		for _, b := range [][]byte{BucketSessions, BucketUserVersions, BucketTeacherToken, BucketMeta, BucketPushSubs, BucketPushMeta} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
 		}
 		meta := tx.Bucket(BucketMeta)
-		if meta.Get(KeySchemaVersion) == nil {
+		ver := meta.Get(KeySchemaVersion)
+		if ver == nil {
 			if err := meta.Put(KeySchemaVersion, SchemaVersion); err != nil {
 				return err
 			}
+		} else if string(ver) == "1" {
+			if err := meta.Put(KeySchemaVersion, SchemaVersion); err != nil {
+				return err
+			}
+		} else if string(ver) != "2" {
+			return errors.New("unsupported schema version " + string(ver))
 		}
 		if meta.Get(KeyGlobalEpoch) == nil {
 			if err := meta.Put(KeyGlobalEpoch, []byte("0")); err != nil {
@@ -134,8 +144,12 @@ func (s *Store) Close() error {
 
 func (s *Store) Ping() error {
 	return s.db.View(func(tx *bolt.Tx) error {
-		if tx.Bucket(BucketMeta).Get(KeySchemaVersion) == nil {
+		ver := tx.Bucket(BucketMeta).Get(KeySchemaVersion)
+		if ver == nil {
 			return errNoSchema()
+		}
+		if string(ver) != "2" {
+			return errors.New("unsupported schema version " + string(ver))
 		}
 		return nil
 	})
@@ -522,6 +536,365 @@ func (s *Store) StripClass(uid, cid int64) (int, error) {
 		return nil
 	})
 	return changed, err
+}
+
+// PushSub is a Web Push subscription row stored in push_subs[hex(sha256(endpoint))].
+type PushSub struct {
+	UID        int64     `json:"uid"`
+	SID        string    `json:"sid"`
+	Endpoint   string    `json:"endpoint"`
+	P256dh     string    `json:"p256dh"`
+	Auth       string    `json:"auth"`
+	Cids       []int64   `json:"cids,omitempty"`
+	All        bool      `json:"all"`
+	UA         string    `json:"ua,omitempty"`
+	KeyVersion string    `json:"key_version"`
+	CreatedAt  time.Time `json:"created_at"`
+	LastOkAt   time.Time `json:"last_ok_at"`
+	FailCount  int       `json:"fail_count"`
+}
+
+// PushKey returns hex(sha256(endpoint)) bucket key.
+func PushKey(endpoint string) []byte {
+	sum := sha256.Sum256([]byte(endpoint))
+	dst := make([]byte, 64)
+	hex.Encode(dst, sum[:])
+	return dst
+}
+
+func (s *Store) PutPushSub(sub *PushSub) error {
+	raw, err := json.Marshal(sub)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(BucketPushSubs).Put(PushKey(sub.Endpoint), raw)
+	})
+}
+
+func (s *Store) GetPushSub(endpoint string) (*PushSub, error) {
+	var sub *PushSub
+	err := s.db.View(func(tx *bolt.Tx) error {
+		raw := tx.Bucket(BucketPushSubs).Get(PushKey(endpoint))
+		if raw == nil {
+			return nil
+		}
+		var p PushSub
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return err
+		}
+		sub = &p
+		return nil
+	})
+	return sub, err
+}
+
+func (s *Store) DeletePushSub(endpoint string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(BucketPushSubs).Delete(PushKey(endpoint))
+	})
+}
+
+func (s *Store) SnapshotPushSubs() ([]PushSub, error) {
+	var out []PushSub
+	err := s.db.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket(BucketPushSubs).Cursor()
+		for _, raw := c.First(); raw != nil; _, raw = c.Next() {
+			var p PushSub
+			if err := json.Unmarshal(raw, &p); err != nil {
+				continue
+			}
+			out = append(out, p)
+		}
+		return nil
+	})
+	return out, err
+}
+
+func (s *Store) PushSubsCount() (int, error) {
+	var n int
+	err := s.db.View(func(tx *bolt.Tx) error {
+		n = tx.Bucket(BucketPushSubs).Stats().KeyN
+		return nil
+	})
+	return n, err
+}
+
+// SessionWithSID pairs a session record with its sid.
+type SessionWithSID struct {
+	SID string
+	Rec *SessionRecord
+}
+
+func (s *Store) SessionsForUID(uid int64) ([]SessionWithSID, error) {
+	var out []SessionWithSID
+	err := s.db.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket(BucketSessions).Cursor()
+		for k, raw := c.First(); k != nil; k, raw = c.Next() {
+			var r SessionRecord
+			if err := json.Unmarshal(raw, &r); err != nil {
+				continue
+			}
+			if r.StepikUserID != uid {
+				continue
+			}
+			cp := r
+			out = append(out, SessionWithSID{SID: string(k), Rec: &cp})
+		}
+		return nil
+	})
+	return out, err
+}
+
+// BestSessionForUID returns freshest live session for uid in one View snapshot.
+// Freshness is VerifyTTL+15m upper bound (UTC), plus ExpiresAt, UserVersion, GlobalEpoch.
+// IsTeacher does not bypass expiry.
+func (s *Store) BestSessionForUID(uid int64, verifyTTL time.Duration) (*SessionRecord, string) {
+	var best *SessionRecord
+	var bestSID string
+	now := time.Now().UTC()
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		var curVer uint64
+		if raw := tx.Bucket(BucketUserVersions).Get([]byte(strconv.FormatInt(uid, 10))); raw != nil {
+			if n, err := strconv.ParseUint(string(raw), 10, 64); err == nil {
+				curVer = n
+			}
+		}
+		var curEpoch uint64
+		if raw := tx.Bucket(BucketMeta).Get(KeyGlobalEpoch); raw != nil {
+			if n, err := strconv.ParseUint(string(raw), 10, 64); err == nil {
+				curEpoch = n
+			}
+		}
+		c := tx.Bucket(BucketSessions).Cursor()
+		for k, raw := c.First(); k != nil; k, raw = c.Next() {
+			var r SessionRecord
+			if err := json.Unmarshal(raw, &r); err != nil {
+				continue
+			}
+			if r.StepikUserID != uid {
+				continue
+			}
+			if !r.ExpiresAt.After(now) {
+				continue
+			}
+			if time.Since(r.LastVerifiedAt.UTC()) > verifyTTL+15*time.Minute {
+				continue
+			}
+			if r.UserVersion != curVer {
+				continue
+			}
+			if r.GlobalEpoch != curEpoch {
+				continue
+			}
+			if best == nil || r.LastVerifiedAt.After(best.LastVerifiedAt) {
+				cp := r
+				best = &cp
+				bestSID = string(k)
+			}
+		}
+		return nil
+	})
+	if best == nil {
+		return nil, ""
+	}
+	return best, bestSID
+}
+
+// DeleteSessionAndPushSubs deletes session sid + push rows where row.sid==sid in single Update.
+func (s *Store) DeleteSessionAndPushSubs(sid string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		if err := tx.Bucket(BucketSessions).Delete([]byte(sid)); err != nil {
+			return err
+		}
+		pb := tx.Bucket(BucketPushSubs)
+		c := pb.Cursor()
+		for k, raw := c.First(); k != nil; k, raw = c.Next() {
+			var p PushSub
+			if err := json.Unmarshal(raw, &p); err != nil {
+				continue
+			}
+			if p.SID == sid {
+				if err := pb.Delete(k); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// StripClassAndPrunePush rewrites sessions AllowedClassIDs + prunes push rows in single Update.
+// Never bumps UserVersion for class revoke.
+func (s *Store) StripClassAndPrunePush(uid, cid int64) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		sb := tx.Bucket(BucketSessions)
+		sc := sb.Cursor()
+		for k, raw := sc.First(); k != nil; k, raw = sc.Next() {
+			var r SessionRecord
+			if err := json.Unmarshal(raw, &r); err != nil {
+				continue
+			}
+			if r.StepikUserID != uid {
+				continue
+			}
+			kept := r.AllowedClassIDs[:0]
+			for _, id := range r.AllowedClassIDs {
+				if id != cid {
+					kept = append(kept, id)
+				}
+			}
+			if len(kept) == len(r.AllowedClassIDs) {
+				continue
+			}
+			r.AllowedClassIDs = kept
+			if r.ClassTitles != nil {
+				delete(r.ClassTitles, strconv.FormatInt(cid, 10))
+			}
+			next, err := json.Marshal(&r)
+			if err != nil {
+				return err
+			}
+			if err := sb.Put(k, next); err != nil {
+				return err
+			}
+		}
+		pb := tx.Bucket(BucketPushSubs)
+		pc := pb.Cursor()
+		for k, raw := pc.First(); k != nil; k, raw = pc.Next() {
+			var p PushSub
+			if err := json.Unmarshal(raw, &p); err != nil {
+				continue
+			}
+			if p.UID != uid {
+				continue
+			}
+			if p.All {
+				if err := pb.Delete(k); err != nil {
+					return err
+				}
+				continue
+			}
+			found := false
+			for _, id := range p.Cids {
+				if id == cid {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+			if len(p.Cids) == 1 {
+				if err := pb.Delete(k); err != nil {
+					return err
+				}
+				continue
+			}
+			kept := p.Cids[:0]
+			for _, id := range p.Cids {
+				if id != cid {
+					kept = append(kept, id)
+				}
+			}
+			p.Cids = kept
+			next, err := json.Marshal(&p)
+			if err != nil {
+				return err
+			}
+			if err := pb.Put(k, next); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// BumpVersionAndPrunePush bumps user version + deletes rows for uid in single Update.
+func (s *Store) BumpVersionAndPrunePush(uid int64) (uint64, error) {
+	var v uint64
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		ub := tx.Bucket(BucketUserVersions)
+		k := []byte(strconv.FormatInt(uid, 10))
+		var cur uint64
+		if raw := ub.Get(k); raw != nil {
+			n, err := strconv.ParseUint(string(raw), 10, 64)
+			if err != nil {
+				return err
+			}
+			cur = n
+		}
+		cur++
+		v = cur
+		if err := ub.Put(k, []byte(strconv.FormatUint(cur, 10))); err != nil {
+			return err
+		}
+		pb := tx.Bucket(BucketPushSubs)
+		c := pb.Cursor()
+		for pk, raw := c.First(); pk != nil; pk, raw = c.Next() {
+			var p PushSub
+			if err := json.Unmarshal(raw, &p); err != nil {
+				continue
+			}
+			if p.UID == uid {
+				if err := pb.Delete(pk); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	return v, err
+}
+
+// DeletePushSubsForUID deletes all push rows for uid in single Update.
+func (s *Store) DeletePushSubsForUID(uid int64) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		pb := tx.Bucket(BucketPushSubs)
+		c := pb.Cursor()
+		for k, raw := c.First(); k != nil; k, raw = c.Next() {
+			var p PushSub
+			if err := json.Unmarshal(raw, &p); err != nil {
+				continue
+			}
+			if p.UID == uid {
+				if err := pb.Delete(k); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// BumpEpochAndClearPush bumps global epoch + deletes all push_subs in single Update.
+func (s *Store) BumpEpochAndClearPush() (uint64, error) {
+	var v uint64
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		mb := tx.Bucket(BucketMeta)
+		var cur uint64
+		if raw := mb.Get(KeyGlobalEpoch); raw != nil {
+			n, err := strconv.ParseUint(string(raw), 10, 64)
+			if err != nil {
+				return err
+			}
+			cur = n
+		}
+		cur++
+		v = cur
+		if err := mb.Put(KeyGlobalEpoch, []byte(strconv.FormatUint(cur, 10))); err != nil {
+			return err
+		}
+		pb := tx.Bucket(BucketPushSubs)
+		c := pb.Cursor()
+		for k, _ := c.First(); k != nil; k, _ = c.Next() {
+			if err := pb.Delete(k); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return v, err
 }
 
 func (s *Store) StartSweeper(stop <-chan struct{}) {

@@ -44,3 +44,47 @@ Pre-req: deploy with refresh renewal; `docker compose logs gate` shows
 |---|------|----------|-------------|--------------|------|
 | R6 | Revoked refresh (revoke app at Stepik / use dead refresh) → open `/class/<cid>` | `302` to login (HTML) / `401 auth_required` (`/auth/check`), re-login banner; stored refresh cleared | | `teacher_renew_demand_invalid_grant` (+ `teacher_background_parked reason=invalid_grant` if teacher record) | |
 | R7 | After R6, teacher `/` banner | `"Проверка студентов приостановлена…"` while parked; clears after teacher re-login; parked loop escapes on 6h tick even without restart | | `teacher_background_parked` → (re-login) → `teacher_background_renew_ok` / `teacher_background_alive` | |
+
+## 0002 P1 — PWA shell (2026-09-22, unit + contract)
+
+Gates: `go build ./...`, `go vet ./...`, `go test -count=1 ./...` green; `govulncheck ./...` clean; `deploy/caddy-verify.sh` checks 1–9 green; container `caddy validate`; `docker compose -f deploy/compose.yml config` parses.
+
+| # | Step | Expected | Actual+code | Evidence | Pass |
+|---|------|----------|-------------|----------|------|
+| P1.1 | Manifest/SW/offline/headers | `/manifest.json 200 application/manifest+json public,max-age=3600` full §5 (id:/, start_url:/?source=pwa, split any/maskable, no any maskable); `/sw.js 200 application/javascript no-store` full §6 (%q REV, named cache, startsWith guard, focus+navigate); `/offline.html 200 text/html`; `/static/push.js 200 application/javascript` | unit `TestManifest_full`, `TestSW_bundle`, `TestSW_staticAssets200`, `TestOffline_public` green | `go test ./gate/handlers/ -run TestManifest_full|TestSW_bundle|TestSW_staticAssets200|TestOffline_public -v` | ✅ |
+| P1.2 | Push auth | `/push/vapid-key 401 anon {error:auth_required}`; wrong-method 405; `AllowPushByIP` before session; shallow `/push/health 200 {ok:true}`; deep `?deep=1` without token 404 | unit `TestVapidKey_401anon`, `TestPush_wrongMethod405`, `TestPushHealth_deep` green | `go test ./gate/handlers/ -run TestVapidKey_401anon|TestPush_wrongMethod405|TestPushHealth_deep -v` | ✅ |
+| P1.3 | Caddy contracts | `caddy-verify.sh` checks 1–5 (0001) + 6–9 (push: webhook 404 + upstream-never-hit, vapid-key 401/200, offline 200 text/html, deep 404 + forged 404) | to be run on VPS/CI with pinned `caddy:2.11.4-alpine@sha256:de23…` | `deploy/caddy-verify.sh` log (see CI `caddy-contract`) | ⏳ CI |
+| P1.4 | Lighthouse + maskable | Mobile ≥90, DevTools Manifest no errors (192+512, standalone), maskable safe-zone verified via maskable.app | manual (iPhone iOS 26.+ + Android Chrome) | TESTLOG P1 device evidence | ⏳ manual |
+| P1.5 | Cache headers | `cf-cache-status: BYPASS/DYNAMIC` (never HIT) for `/manifest.json`, `/sw.js`, `/offline.html`, `/push/vapid-key`, `/push/subscribe`, `/static/push.js` | manual edge curl | `curl -I https://stepik.study67.fyi/...` | ⏳ manual |
+
+`cf-cache-status` evidence:
+
+```
+# P1 edge: to be pasted after VPS deploy (BYPASS/DYNAMIC, never HIT)
+```
+
+## 0002 P2 — push end-to-end (webhook enabled, ≥2 test users)
+
+| # | Step | Expected | Actual+code | Evidence | Pass |
+|---|------|----------|-------------|----------|------|
+| 6 | A subscribes → B posts → A notifies | Single <5s, e2e <30s, title/body/deep-link correct, click focuses/opens `/class/<cid>#remark-<id>` hash-preserved | unit `TestUnsubscribe_ownership`, `TestSubscribe_validation`, `TestResubscribe_matrix` + worker `push_send` | `go test ./gate/handlers/ ./gate/push/ -v` + `docker compose logs gate \| grep push_send` | ✅ unit, ⏳ live |
+| 7 | Self/outsider/revoked suppressed | B nothing own; outsider/revoked nothing (`push_skip_revoked`; re-join resumes); revoke immediate (no 6h lag) | unit `TestStripClassAndPrunePush_revokeImmediate`, `TestBestSessionForUID_matrix` | `go test ./gate/sessions/ -v` | ✅ unit, ⏳ live |
+| 7b | Logout/device/user-change/ex-student | Device1 logout → nothing, device2 fires; relog heals; shared-computer untap; >24h `max(created,last_ok)` nothing (uniform); orphan 200, foreign-live 403 | unit `TestLogout_prunesPush`, `TestDeleteSessionAndPushSubs_onlyThatSid`, `TestUnsubscribe_ownership` | `go test ./gate/handlers/ ./gate/sessions/ -v` | ✅ unit, ⏳ live |
+| 8 | Multi-device | Both fire; unsubscribe one → remaining fires | live (2 browsers) | `push_send` ×2 then ×1 | ⏳ live |
+| 9 | Denied/expired | Deny → RU denied-string; `unsubscribe()` → next webhook `410` → prune (`push_prune expired`); `403` retained (`push_403_key_mismatch`) | unit + live devtools | logs | ⏳ live |
+| 10 | Burst | 5/30s → ≤2 pushes (1 immediate + 1 summary RU plural), visible 1 (same tag + renotify) | unit `TestPlural`, `TestCoalesceN`, `TestPayload2048` | `go test ./gate/push/ -v` + push-service log count + device-visible single | ✅ unit, ⏳ live |
+| 11 | All scope | Teacher `all` every owned incl. future; student `all` only own `allowed` (live expansion; absent `all` → skip) | unit `TestAllMinusOne`, `TestIsValidCids` | `go test ./gate/push/ -v` | ✅ unit, ⏳ live |
+| 12 | Resource | `docker stats gate <256M`; `go test -count=1` + `vet` + `govulncheck` green | `go build/vet/test -count=1` green (see below); `docker stats --no-stream` | ⏳ `docker stats` on VPS |
+| 13 | Security spot-checks | Endpoint-SSRF 400; webhook header-deny 404 + GET 404 + charset 200; comment_id drop; Bot OFF; `/push/health?deep=1` edge 404 even with token, direct `gate:8081` 200 counts-only; Retry-After 429; `push_*` samples; revoke→suppress; resubscribe empty-old 400; 410 prune vs 403 retain; reconciler tick | unit `TestEndpoint`, `TestVerifyWebhook`, `TestCommentID`, `TestRetryAfterCap`, `TestSweep`, `TestPushHealth_deep` green | `go test ./gate/push/ ./gate/handlers/ -v` + edge curl + direct `http://gate:8081/push/health?deep=1` with token (from docker/caddy-net) | ✅ unit, ⏳ live edge/direct |
+
+`push/health` deep evidence (D3.2):
+
+```
+# edge deep (even with token) → 404 (Caddy strips X-Gate-Auth, no header_up):
+#   curl -sk -o /dev/null -w '%{http_code}\n' -H 'X-Gate-Auth: <any>' 'https://stepik.study67.fyi/push/health?deep=1'  # want 404
+# direct gate:8081 with token (bypasses Caddy, from docker/caddy-net):
+#   curl -s -H "X-Gate-Auth: $CADDY_GATE_TOKEN" 'http://gate:8081/push/health?deep=1'  # want 200 {ok:true,subs:<n>,queue:<m>} counts-only, no PII
+# (to be pasted after VPS deploy; edge deep must be 404 even with forged token — proves strip)
+```
+
+Known gap (documented, no code in MVP): logout requires network; offline logout leaves rows until next online logout/sweep/24h cap.

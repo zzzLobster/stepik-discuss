@@ -11,8 +11,14 @@
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <meta name="theme-color" content="#3776AB">
 <link rel="manifest" href="/manifest.json">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Stepik Discuss">
+<script src="/static/push.js" defer></script>
+<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js')}</script>
 </head>
-<body>
+{{if .LoggedIn}}<body data-uid="{{.UID}}" data-allowed='{{.AllowedJSON}}'>{{else}}<body>{{end}}
 <main>
 <h1>Обсуждения классов</h1>
 {{if .LoggedIn}}
@@ -27,6 +33,11 @@
 {{else}}
 <p>Пока нет доступных классов.</p>
 {{end}}
+<p><button type="button" data-bell>🔔 Уведомлять о новых комментариях [Выкл]</button></p>
+<p data-push-status></p>
+<p data-ios-hint style="display:none"></p>
+<p><button type="button" data-install style="display:none">Установить приложение</button> <a href="/" data-install-dismiss style="display:none">Скрыть</a></p>
+<p><a href="/">Установить приложение</a> — инструкция на главной. Установите как приложение, иначе уведомления не придут.</p>
 <form method="post" action="/auth/logout"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit" class="button">Выйти из аккаунта? Да, выйти</button></form>
 {{else}}
 <p>{{.Consent}}</p>

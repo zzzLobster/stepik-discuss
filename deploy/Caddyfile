@@ -69,6 +69,29 @@ stepik.study67.fyi {
 		reverse_proxy gate:8081
 	}
 
+	handle /offline.html {
+		reverse_proxy gate:8081
+	}
+	handle /push/vapid-key* {
+		reverse_proxy gate:8081
+	}
+	handle /push/subscribe* {
+		reverse_proxy gate:8081
+	}
+	handle /push/unsubscribe* {
+		reverse_proxy gate:8081
+	}
+	handle /push/resubscribe* {
+		reverse_proxy gate:8081
+	}
+	handle /push/health* {
+		request_header -X-Gate-Auth
+		reverse_proxy gate:8081
+	}
+	handle /push/webhook* {
+		respond "Not found" 404
+	}
+
 	# remark42 serves API+web at ROOT (/api/..., /web/...); REMARK_URL path
 	# prefix is URL-generation only. handle_path strips /discuss so upstream
 	# sees root paths (spike-verified 2026-09-17: prefixed /user->404).

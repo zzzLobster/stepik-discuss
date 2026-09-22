@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"net/url"
@@ -36,6 +38,11 @@ type Config struct {
 	RemarkURL          string
 	Origin             string
 	DBPath             string
+	VapidPublicKey     string
+	VapidPrivateKey    string
+	VapidPublicKeyOld  string
+	VapidSubject       string
+	PushWebhookSecret  string
 }
 
 func getenv(key, fallback string) string {
@@ -107,8 +114,44 @@ func Load() (Config, error) {
 	if u, err := url.Parse(c.Origin); err != nil || u.Scheme == "" || u.Host == "" {
 		return Config{}, errors.New("GATE_ORIGIN must be an absolute URL")
 	}
+	c.Origin = strings.TrimSuffix(c.Origin, "/")
 	if c.ClassBase() == "" {
 		return Config{}, errors.New("GATE_ORIGIN must be an absolute URL")
+	}
+	c.VapidPublicKey = os.Getenv("VAPID_PUBLIC_KEY")
+	c.VapidPrivateKey = os.Getenv("VAPID_PRIVATE_KEY")
+	c.VapidPublicKeyOld = os.Getenv("VAPID_PUBLIC_KEY_OLD")
+	c.VapidSubject = os.Getenv("VAPID_SUBJECT")
+	c.PushWebhookSecret = os.Getenv("PUSH_WEBHOOK_SECRET")
+	if c.VapidPublicKey == "" {
+		return Config{}, errors.New("VAPID_PUBLIC_KEY is required")
+	}
+	if c.VapidPrivateKey == "" {
+		return Config{}, errors.New("VAPID_PRIVATE_KEY is required")
+	}
+	if c.VapidSubject == "" {
+		return Config{}, errors.New("VAPID_SUBJECT is required")
+	}
+	if c.PushWebhookSecret == "" {
+		return Config{}, errors.New("PUSH_WEBHOOK_SECRET is required")
+	}
+	if err := validateVAPIDKeys(c.VapidPublicKey, c.VapidPrivateKey); err != nil {
+		return Config{}, err
+	}
+	if c.VapidPublicKeyOld != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(c.VapidPublicKeyOld)
+		if err != nil || len(raw) != 65 || raw[0] != 0x04 {
+			return Config{}, errors.New("VAPID_PUBLIC_KEY_OLD must be base64url 65B uncompressed 0x04")
+		}
+	}
+	if !(strings.HasPrefix(c.VapidSubject, "mailto:") || strings.HasPrefix(c.VapidSubject, "https://")) {
+		return Config{}, errors.New("VAPID_SUBJECT must be mailto: or https://")
+	}
+	if len(c.PushWebhookSecret) != 64 {
+		return Config{}, errors.New("PUSH_WEBHOOK_SECRET must be 64 hex chars")
+	}
+	if _, err := hex.DecodeString(c.PushWebhookSecret); err != nil {
+		return Config{}, errors.New("PUSH_WEBHOOK_SECRET must be hex")
 	}
 	c.DBPath = getenv("GATE_DB_PATH", "/data/gate.db")
 	return c, nil
@@ -130,6 +173,35 @@ func parseDuration(key, fallback string) (time.Duration, error) {
 // auth.ExtractCIDWithBase; the ClassBaseURL const remains the default only.
 func (c Config) ClassBase() string {
 	return strings.TrimSuffix(c.Origin, "/") + "/class/"
+}
+
+// CanonicalOrigin returns Origin without trailing slash for exact Origin matching.
+func (c Config) CanonicalOrigin() string {
+	return strings.TrimSuffix(c.Origin, "/")
+}
+
+// VapidFP8 returns fp8 hex (8 chars) = hex(sha256(public base64url string))[:8].
+func VapidFP8(public string) string {
+	sum := sha256.Sum256([]byte(public))
+	return hex.EncodeToString(sum[:])[:8]
+}
+
+func validateVAPIDKeys(public, private string) error {
+	pubRaw, err := base64.RawURLEncoding.DecodeString(public)
+	if err != nil {
+		return errors.New("VAPID_PUBLIC_KEY must be base64url")
+	}
+	if len(pubRaw) != 65 || pubRaw[0] != 0x04 {
+		return errors.New("VAPID_PUBLIC_KEY must decode to 65B uncompressed 0x04")
+	}
+	privRaw, err := base64.RawURLEncoding.DecodeString(private)
+	if err != nil {
+		return errors.New("VAPID_PRIVATE_KEY must be base64url")
+	}
+	if len(privRaw) != 32 {
+		return errors.New("VAPID_PRIVATE_KEY must decode to 32B")
+	}
+	return nil
 }
 
 // EmbedHost returns the normalized RemarkURL (keeps the /discuss base path

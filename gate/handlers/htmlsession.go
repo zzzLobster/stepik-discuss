@@ -116,6 +116,7 @@ func (s *Server) resolveHTMLSession(w http.ResponseWriter, r *http.Request, cid 
 		s.renderHTMLTransient(w)
 		return nil, "", false, htmlOutcomeTransient, "transient", true
 	}
+	s.cacheTitlesFromSession(sess)
 	if !stale && sess.IsTeacher && len(sess.AllowedClassIDs) == 0 {
 		fstale, ferr := s.checker.ForceTeacherEmptyRefresh(r.Context(), sid, sess)
 		if ferr != nil {

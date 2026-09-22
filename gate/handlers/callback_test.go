@@ -88,7 +88,7 @@ func TestCallback_teacherTokenPutFailure(t *testing.T) {
 		},
 	}
 	adm := &admin.Admin{Store: store, Origin: cfg.Origin, Log: log}
-	s := New(cfg, store, mockStep, limits, checker, adm, log, testTemplates(t), os.DirFS("../static"))
+	s := New(cfg, store, mockStep, limits, checker, adm, log, testTemplates(t), os.DirFS("../static"), "test-rev")
 
 	binder := "binder-put-fail"
 	state, err := s.newState("/", binder, "1.2.3.4")
