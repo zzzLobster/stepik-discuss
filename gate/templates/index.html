@@ -37,8 +37,18 @@
 <p data-push-status></p>
 <p data-ios-hint style="display:none"></p>
 <p><button type="button" data-install style="display:none">Установить приложение</button> <a href="/" data-install-dismiss style="display:none">Скрыть</a></p>
-<p><a href="/">Установить приложение</a> — инструкция на главной. Установите как приложение, иначе уведомления не придут.</p>
+<p><a href="#install-help" data-install-help>Установить приложение</a> — инструкция ниже. Установите как приложение, иначе уведомления не придут.</p>
 <form method="post" action="/auth/logout"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit" class="button">Выйти из аккаунта? Да, выйти</button></form>
+<section id="install-help">
+<h2>Как установить приложение</h2>
+<ul>
+<li>Android Chrome: ⋮ → Установить приложение.</li>
+<li>iPhone/iPad: Поделиться → На экран «Домой», затем откройте с иконки — уведомления приходят только из значка на экране «Домой».</li>
+<li>Desktop Chrome/Edge: меню → Установить.</li>
+<li>Firefox на компьютере: установка недоступна, уведомления работают в браузере через колокольчик.</li>
+</ul>
+<p data-install-status></p>
+</section>
 {{else}}
 <p>{{.Consent}}</p>
 <p><a class="button" href="/auth/login">{{.LoginButton}}</a></p>

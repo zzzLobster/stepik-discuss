@@ -144,8 +144,19 @@ func Load() (Config, error) {
 			return Config{}, errors.New("VAPID_PUBLIC_KEY_OLD must be base64url 65B uncompressed 0x04")
 		}
 	}
-	if !(strings.HasPrefix(c.VapidSubject, "mailto:") || strings.HasPrefix(c.VapidSubject, "https://")) {
-		return Config{}, errors.New("VAPID_SUBJECT must be mailto: or https://")
+	// webpush-go prepends "mailto:" unless the value starts with "https:"
+	// (module source: vapid.go getVAPIDAuthorizationHeader), so store bare
+	// email — a stored "mailto:" prefix would double to
+	// "mailto:mailto:..." in the JWT sub claim (Apple rejects with 403,
+	// FCM/Mozilla are lenient). Fail fast on the prefixed form.
+	switch {
+	case strings.HasPrefix(c.VapidSubject, "mailto:"):
+		return Config{}, errors.New("VAPID_SUBJECT must be bare email (webpush-go prepends mailto:) or https:// URL")
+	case strings.HasPrefix(c.VapidSubject, "https://"):
+	default:
+		if !strings.Contains(c.VapidSubject, "@") || strings.Contains(c.VapidSubject, "://") || strings.ContainsAny(c.VapidSubject, " \t\r\n") {
+			return Config{}, errors.New("VAPID_SUBJECT must be bare email or https:// URL")
+		}
 	}
 	if len(c.PushWebhookSecret) != 64 {
 		return Config{}, errors.New("PUSH_WEBHOOK_SECRET must be 64 hex chars")

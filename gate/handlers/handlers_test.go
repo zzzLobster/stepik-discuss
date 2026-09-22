@@ -76,7 +76,7 @@ func baseCfg() config.Config {
 		Origin: "https://stepik.study67.fyi",
 		VapidPublicKey: "B" + strings.Repeat("A", 86),
 		VapidPrivateKey: strings.Repeat("A", 43),
-		VapidSubject: "mailto:mjgavrilov@gmail.com",
+		VapidSubject: "mjgavrilov@gmail.com",
 		PushWebhookSecret: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	}
 }

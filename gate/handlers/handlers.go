@@ -734,7 +734,7 @@ self.addEventListener("notificationclick", (e) => {
   let url = (e.notification.data && e.notification.data.url) || "/";
   if (typeof url !== "string" || !url.startsWith("/class/")) url = "/";
   e.waitUntil(clients.matchAll({type: "window", includeUncontrolled: true}).then((ws) => {
-    for (const w of ws) { try { if (new URL(w.url).pathname === new URL(url, location.origin).pathname) { return w.focus().then(() => { if ("navigate" in w) return w.navigate(url); }); } } catch(_) {} }
+    for (const w of ws) { try { if (new URL(w.url).pathname === new URL(url, location.origin).pathname) { return w.focus().then((cw) => { const t = cw || w; const send = () => { try { t.postMessage({type: "push-click", url: url}); } catch(_) {} }; if ("navigate" in t) { return t.navigate(url).then(send, send); } send(); }); } } catch(_) {} }
     return clients.openWindow(url);
   }));
 });

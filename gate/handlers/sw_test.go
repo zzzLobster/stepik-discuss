@@ -29,6 +29,8 @@ func TestSW_bundle(t *testing.T) {
 		`startsWith("/class/")`,
 		`focus()`,
 		`navigate(url)`,
+		`postMessage`,
+		`push-click`,
 		`userVisibleOnly`,
 		`showNotification`,
 		`pushsubscriptionchange`,

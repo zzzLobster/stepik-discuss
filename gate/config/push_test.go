@@ -50,8 +50,14 @@ func TestLoad_vapid(t *testing.T) {
 	clearEnv(t)
 	validEnv(t)
 	t.Setenv("VAPID_SUBJECT", "bare@example.com")
+	if _, err := Load(); err != nil {
+		t.Fatalf("bare subject rejected: %v", err)
+	}
+	clearEnv(t)
+	validEnv(t)
+	t.Setenv("VAPID_SUBJECT", "mailto:bare@example.com")
 	if _, err := Load(); err == nil {
-		t.Fatal("bare subject accepted")
+		t.Fatal("mailto:-prefixed subject accepted (doubles to mailto:mailto:…, Apple 403s)")
 	}
 	clearEnv(t)
 	validEnv(t)

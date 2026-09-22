@@ -76,6 +76,7 @@ async function healSubscription(){
       await fetch("/push/subscribe",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json","X-CSRF-Token":csrfFromCookie()},body:JSON.stringify({endpoint:sub.endpoint,keys:sj.keys,device:{ua:navigator.userAgent},cids:cidsVal})});
       try{localStorage.setItem("push_uid",String(uid));if(!storedCids)localStorage.setItem("push_cids",typeof cidsVal==="string"?cidsVal:JSON.stringify(cidsVal));localStorage.setItem("vapid_key_fp",fp);}catch(_){}
     }catch(_){}
+    updateBell(true);
   }catch(_){}
 }
 function updateBell(on){
@@ -176,9 +177,82 @@ async function togglePush(){
   }
 }
 (function(){
+  let deferredPrompt=null;
+  function isStandalone(){
+    try{
+      if(navigator.standalone)return true;
+      if(window.matchMedia&&matchMedia("(display-mode: standalone)").matches)return true;
+    }catch(_){}
+    return false;
+  }
+  function showInstallButton(){
+    try{
+      if(localStorage.getItem("pwa_install_dismissed")==="1")return;
+    }catch(_){}
+    const btn=document.querySelector("[data-install]");
+    if(!btn)return;
+    if(btn.style.display==="block")return;
+    btn.style.display="block";
+    btn.addEventListener("click",async()=>{
+      if(deferredPrompt){
+        try{deferredPrompt.prompt();await deferredPrompt.userChoice;}catch(_){}
+        deferredPrompt=null;
+      }
+      btn.style.display="none";
+    },{once:true});
+  }
+  async function handleInstallHelpClick(){
+    if(deferredPrompt){
+      try{deferredPrompt.prompt();await deferredPrompt.userChoice;}catch(_){}
+      deferredPrompt=null;
+      const btn=document.querySelector("[data-install]");
+      if(btn)btn.style.display="none";
+      return;
+    }
+    if(isIosNotInstalled()){
+      const h=document.querySelector("[data-ios-hint]");
+      if(h){showIosHint(h);try{h.scrollIntoView();}catch(_){}}
+      return;
+    }
+    if(isStandalone()){
+      const st=document.querySelector("[data-install-status]");
+      if(st){st.textContent="Приложение уже установлено.";}
+      const sec=document.getElementById("install-help");
+      if(sec){try{sec.scrollIntoView();}catch(_){}}
+      return;
+    }
+    const sec=document.getElementById("install-help");
+    if(sec){try{sec.scrollIntoView();}catch(_){}}
+  }
   if("serviceWorker" in navigator){
     try{navigator.serviceWorker.register("/sw.js");}catch(_){}
+    try{
+      navigator.serviceWorker.addEventListener("message",(e)=>{
+        if(!e||!e.data||e.data.type!=="push-click")return;
+        let url=e.data.url||"/";
+        if(typeof url!=="string"||!url.startsWith("/class/"))return;
+        try{
+          if(new URL(url,location.origin).pathname===location.pathname){
+            location.reload();
+          }else{
+            location.assign(url);
+          }
+        }catch(_){
+          try{location.assign(url);}catch(_){}
+        }
+      });
+    }catch(_){}
   }
+  window.addEventListener("beforeinstallprompt",(e)=>{
+    e.preventDefault();
+    deferredPrompt=e;
+    showInstallButton();
+  });
+  window.addEventListener("appinstalled",()=>{
+    deferredPrompt=null;
+    const btn=document.querySelector("[data-install]");
+    if(btn)btn.style.display="none";
+  });
   document.addEventListener("DOMContentLoaded",()=>{
     const bells=document.querySelectorAll("[data-bell]");
     bells.forEach((b)=>{b.addEventListener("click",togglePush);});
@@ -187,32 +261,18 @@ async function togglePush(){
       if(h)showIosHint(h);
     }
     healSubscription();
-    let deferredPrompt=null;
-    window.addEventListener("beforeinstallprompt",(e)=>{
-      e.preventDefault();
-      deferredPrompt=e;
-      try{
-        if(localStorage.getItem("pwa_install_dismissed")==="1")return;
-      }catch(_){}
-      const btn=document.querySelector("[data-install]");
-      if(btn){
-        btn.style.display="block";
-        btn.addEventListener("click",async()=>{
-          if(deferredPrompt){
-            try{deferredPrompt.prompt();await deferredPrompt.userChoice;}catch(_){}
-            deferredPrompt=null;
-          }
-          btn.style.display="none";
-        },{once:true});
-      }
-    });
-    window.addEventListener("appinstalled",()=>{
-      const btn=document.querySelector("[data-install]");
-      if(btn)btn.style.display="none";
-    });
+    if(deferredPrompt)showInstallButton();
+    const help=document.querySelector("[data-install-help]");
+    if(help){
+      help.addEventListener("click",(e)=>{
+        e.preventDefault();
+        handleInstallHelpClick();
+      });
+    }
     const dismiss=document.querySelector("[data-install-dismiss]");
     if(dismiss){
-      dismiss.addEventListener("click",()=>{
+      dismiss.addEventListener("click",(e)=>{
+        if(e)e.preventDefault();
         try{localStorage.setItem("pwa_install_dismissed","1");}catch(_){}
         const btn=document.querySelector("[data-install]");
         if(btn)btn.style.display="none";

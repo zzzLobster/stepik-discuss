@@ -28,7 +28,7 @@ func validEnv(t *testing.T) {
 	t.Setenv("CADDY_GATE_TOKEN", "0123456789abcdef0123456789abcdef")
 	t.Setenv("VAPID_PUBLIC_KEY", "B"+strings.Repeat("A", 86))
 	t.Setenv("VAPID_PRIVATE_KEY", strings.Repeat("A", 43))
-	t.Setenv("VAPID_SUBJECT", "mailto:mjgavrilov@gmail.com")
+	t.Setenv("VAPID_SUBJECT", "mjgavrilov@gmail.com")
 	t.Setenv("PUSH_WEBHOOK_SECRET", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 }
 
@@ -148,5 +148,24 @@ func TestLoad_weakSecrets(t *testing.T) {
 	t.Setenv("CADDY_GATE_TOKEN", "abcd")
 	if _, err := Load(); err == nil {
 		t.Fatal("short CADDY_GATE_TOKEN accepted")
+	}
+}
+
+func TestLoad_vapidSubject(t *testing.T) {
+	for _, ok := range []string{"mjgavrilov@gmail.com", "https://stepik.study67.fyi/"} {
+		clearEnv(t)
+		validEnv(t)
+		t.Setenv("VAPID_SUBJECT", ok)
+		if _, err := Load(); err != nil {
+			t.Fatalf("VAPID_SUBJECT=%q rejected: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"mailto:mjgavrilov@gmail.com", "not-an-email", "foo bar@x", "ftp://x/y"} {
+		clearEnv(t)
+		validEnv(t)
+		t.Setenv("VAPID_SUBJECT", bad)
+		if _, err := Load(); err == nil {
+			t.Fatalf("VAPID_SUBJECT=%q accepted", bad)
+		}
 	}
 }
